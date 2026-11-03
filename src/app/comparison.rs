@@ -136,7 +136,7 @@ impl App {
                     if ui.selectable_label(self.comparison.audition==side,label).clicked(){self.start_comparison_preview(side,from,to);}
                 }
                 if ui.button("Stop preview").clicked(){self.stop_comparison();}
-                ui.label(egui::RichText::new("Dry preview before transitions / FX · stops at view end").color(DIM).size(11.0));
+                ui.label(egui::RichText::new("Dry preview before transitions / FX · stops at view end").color(theme::dim()).size(11.0));
             });
             ui.horizontal_wrapped(|ui| {
                 ui.label("Incoming anchor:"); ui.selectable_value(&mut self.comparison.slot,0,"Set A"); ui.selectable_value(&mut self.comparison.slot,1,"Set B");
@@ -145,7 +145,7 @@ impl App {
                 if ui.button("Target at playhead").clicked(){self.comparison.target=self.beat().round().clamp(s.ceil(),e.floor());}
                 if ui.button("Clear anchors").clicked(){self.comparison.anchors=[None,None];}
             });
-            ui.label(egui::RichText::new("Choose a target beat, then click its incoming attack below. Set A near the start and B later (at least 4 beats apart). Yellow areas need manual checking.").color(DIM).size(11.0));
+            ui.label(egui::RichText::new("Choose a target beat, then click its incoming attack below. Set A near the start and B later (at least 4 beats apart). Yellow areas need manual checking.").color(theme::dim()).size(11.0));
             let evidence=self.beat_check.as_ref().filter(|c|c.incoming==i && self.alignment_stamp(i).as_ref()==Some(&c.stamp)).map(|c|c.evidence.clone()).unwrap_or_default();
             let (rect,_)=ui.allocate_exact_size(vec2(ui.available_width().max(100.0),152.0),Sense::hover());
             let label_width=120.0; let wave=Rect::from_min_max(pos2(rect.left()+label_width,rect.top()),rect.max);
@@ -154,8 +154,8 @@ impl App {
             let proposed=self.proposed_track();
             for (row,ti) in [o,i].into_iter().enumerate() {
                 let r=Rect::from_min_max(pos2(wave.left(),rect.top()+row as f32*76.0),pos2(wave.right(),rect.top()+(row+1) as f32*76.0-4.0));
-                painter.rect_filled(r,3.0,BG);
-                painter.text(pos2(rect.left()+4.0,r.center().y),Align2::LEFT_CENTER,format!("{} · {}",if row==0{"A outgoing"}else{"B incoming"},self.mix.tracks[ti].lane+1),FontId::proportional(12.0),if row==0{BLUE}else{ACCENT});
+                painter.rect_filled(r,3.0,theme::bg());
+                painter.text(pos2(rect.left()+4.0,r.center().y),Align2::LEFT_CENTER,format!("{} · {}",if row==0{"A outgoing"}else{"B incoming"},self.mix.tracks[ti].lane+1),FontId::proportional(12.0),if row==0{BLUE}else{theme::accent()});
                 for ev in &evidence { if !ev.reliable && ev.beat>=from && ev.beat<=to {
                     painter.rect_filled(Rect::from_min_max(pos2(x((ev.beat-0.45).max(from)),r.top()),pos2(x((ev.beat+0.45).min(to)),r.bottom())),0.0,C::from_rgba_unmultiplied(230,170,30,32));
                 } }
@@ -172,7 +172,7 @@ impl App {
                         let end=b.max(a+1).min(audio.l.len().min(audio.r.len())); let step=((end.saturating_sub(a))/64).max(1);
                         let peak=(a.min(end)..end).step_by(step).map(|k|audio.l[k].abs().max(audio.r[k].abs())).fold(0.0_f32,f32::max).min(1.0);
                         let height=peak*r.height()*0.45; let xx=r.left()+px as f32;
-                        painter.line_segment([pos2(xx,r.center().y-height),pos2(xx,r.center().y+height)],Stroke::new(1.0_f32,if row==0{BLUE}else{ACCENT}));
+                        painter.line_segment([pos2(xx,r.center().y-height),pos2(xx,r.center().y+height)],Stroke::new(1.0_f32,if row==0{BLUE}else{theme::accent()}));
                     }
                 }
                 if row==1 {
@@ -185,8 +185,8 @@ impl App {
                 }
             }
             for b in from.ceil() as i64..=to.floor() as i64 { let xx=x(b as f64);
-                painter.line_segment([pos2(xx,rect.top()),pos2(xx,rect.bottom())],Stroke::new(1.0_f32,if b%4==0{C::from_rgb(230,90,90)}else{LINE}));
-                painter.text(pos2(xx+3.0,rect.top()+2.0),Align2::LEFT_TOP,format!("{}",b+1),FontId::proportional(10.0),TXT);
+                painter.line_segment([pos2(xx,rect.top()),pos2(xx,rect.bottom())],Stroke::new(1.0_f32,if b%4==0{C::from_rgb(230,90,90)}else{theme::line()}));
+                painter.text(pos2(xx+3.0,rect.top()+2.0),Align2::LEFT_TOP,format!("{}",b+1),FontId::proportional(10.0),theme::txt());
             }
             for ev in &evidence { if ev.reliable && ev.beat>=from && ev.beat<=to { painter.circle_filled(pos2(x(ev.beat),rect.bottom()-5.0),3.0,if ev.percussion{C::from_rgb(100,210,220)}else{C::LIGHT_GREEN}); } }
             for (slot,a) in self.comparison.anchors.iter().enumerate() { if let Some(a)=a {
@@ -207,7 +207,7 @@ impl App {
                 } }
             });
             if !editable { ui.colored_label(C::LIGHT_YELLOW,"Anchor correction needs unlocked editing and an uncut incoming clip at 1:1 ratio."); }
-            ui.label(egui::RichText::new("Green: paired bass attacks · cyan: percussion evidence · yellow: weak / conflicting evidence · unmarked: not measured. Anchors preserve the grid's local shape; Undo restores the previous grid.").color(DIM).size(11.0));
+            ui.label(egui::RichText::new("Green: paired bass attacks · cyan: percussion evidence · yellow: weak / conflicting evidence · unmarked: not measured. Anchors preserve the grid's local shape; Undo restores the previous grid.").color(theme::dim()).size(11.0));
         });
     }
 }

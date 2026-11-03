@@ -15,7 +15,7 @@ pub(super) fn draw(ui:&egui::Ui,tp:&egui::Painter,ti:usize,t:&Track,wave:Rect,vi
             let hr=Rect::from_center_size(mid,vec2(10.0,10.0));
             if vis.contains(mid) {
                 let r=ui.interact(hr,ui.id().with(("fade_shape",ti,left)),Sense::click_and_drag());
-                tp.circle_filled(mid,3.5,if r.hovered()||r.dragged(){ACCENT}else{C::WHITE});
+                tp.circle_filled(mid,3.5,if r.hovered()||r.dragged(){theme::accent()}else{C::WHITE});
                 if r.double_clicked(){action=Some(TlDrag::Curve{ti,left,wave,reset:true});}
                 else if r.drag_started(){action=Some(TlDrag::Curve{ti,left,wave,reset:false});}
                 r.on_hover_text("Drag up/down to bend the fade. Double-click for a linear fade.");
@@ -25,7 +25,7 @@ pub(super) fn draw(ui:&egui::Ui,tp:&egui::Painter,ti:usize,t:&Track,wave:Rect,vi
         if !vis.contains(center){continue;}
         let hr=Rect::from_center_size(center,vec2(8.0,8.0));
         let r=ui.interact(hr,ui.id().with(("fade",ti,left)),Sense::drag());
-        tp.rect_filled(hr,1.5,if r.hovered()||r.dragged(){ACCENT}else{C::WHITE});
+        tp.rect_filled(hr,1.5,if r.hovered()||r.dragged(){theme::accent()}else{C::WHITE});
         if r.drag_started(){action=Some(TlDrag::Fade{ti,left});}
         r.on_hover_text(if left {"Drag horizontally: fade-in length"}else{"Drag horizontally: fade-out length"});
     }

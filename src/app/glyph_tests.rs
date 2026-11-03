@@ -2,7 +2,7 @@
 #[test]
 fn ui_strings_only_use_glyphs_from_bundled_fonts() {
     let sources = [include_str!("../app.rs"), include_str!("transition_workbench.rs"), include_str!("comparison.rs"), include_str!("library_ui.rs"),
-        include_str!("levels_ui.rs"), include_str!("harmony_ui.rs"), include_str!("sample_ui.rs"), include_str!("stem_volume.rs"), include_str!("clip_fades.rs"),
+        include_str!("levels_ui.rs"), include_str!("harmony_ui.rs"), include_str!("sample_ui.rs"), include_str!("stem_volume.rs"), include_str!("clip_fades.rs"), include_str!("theme.rs"),
         include_str!("persistence.rs"), include_str!("library_drop.rs"), include_str!("../model.rs"), include_str!("../harmony.rs"), include_str!("../automix.rs"), include_str!("../library.rs"), include_str!("../library/browse.rs")];
     let ctx = egui::Context::default(); let _ = ctx.run(Default::default(), |_| {});
     let mut missing = std::collections::BTreeSet::new();

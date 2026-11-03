@@ -140,7 +140,7 @@ impl App {
                 if self.persistence.unreadable>0 {ui.colored_label(C::LIGHT_YELLOW,format!("{} recovery file(s) could not be read and were left untouched.",self.persistence.unreadable));}
                 egui::ScrollArea::vertical().max_height(320.0).show(ui,|ui|{for e in &self.persistence.entries {
                     ui.separator();ui.strong(&e.record.mix.name);ui.label(format!("{} clips · saved {} seconds ago",e.record.mix.tracks.len(),recovery::now().saturating_sub(e.record.saved_at)));
-                    ui.label(egui::RichText::new(e.record.original.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"Never saved to a project file".into())).color(DIM));
+                    ui.label(egui::RichText::new(e.record.original.as_ref().map(|p|p.display().to_string()).unwrap_or_else(||"Never saved to a project file".into())).color(theme::dim()));
                     ui.horizontal(|ui|{if ui.button("Restore copy").clicked(){restore=Some(e.path.clone());}if ui.button("Discard…").clicked(){discard=Some(e.path.clone());}});
                 }});
                 if self.persistence.entries.is_empty(){ui.label("No recoverable copies found.");}

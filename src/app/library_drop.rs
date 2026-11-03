@@ -20,7 +20,7 @@ impl App {
             let x=g.left+((target.beat-g.scroll) as f32)*g.ppb;
             if let Some((_,row))=g.rows.iter().find(|(l,_)|*l==target.lane) {
                 let painter=ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground,egui::Id::new("library_drop_preview")));
-                painter.rect_stroke(*row,0.0,Stroke::new(2.0_f32,ACCENT));painter.line_segment([pos2(x,row.top()),pos2(x,row.bottom())],Stroke::new(3.0_f32,ACCENT));
+                painter.rect_stroke(*row,0.0,Stroke::new(2.0_f32,theme::accent()));painter.line_segment([pos2(x,row.top()),pos2(x,row.bottom())],Stroke::new(3.0_f32,theme::accent()));
             }
         }
         egui::show_tooltip_at_pointer(ctx,egui::LayerId::new(egui::Order::Tooltip,egui::Id::new("library_drag_tip")),egui::Id::new("library_drag_tip"),|ui|{

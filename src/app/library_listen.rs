@@ -62,25 +62,25 @@ impl App {
         let mut stop=false; let mut seek=None;
         egui::Frame::none().fill(C::from_rgb(40,40,24)).rounding(Rounding::same(6.0)).stroke(Stroke::new(1.0_f32,C::from_rgb(110,106,30))).inner_margin(egui::Margin::symmetric(8.0,4.0)).show(ui,|ui|{
             ui.horizontal(|ui|{
-                if ui.add(egui::Button::new(egui::RichText::new("⏹").color(BG)).fill(ACCENT).min_size(vec2(28.0,24.0))).on_hover_text("Stop preview (Space)").clicked() { stop=true; }
+                if ui.add(egui::Button::new(egui::RichText::new("⏹").color(theme::bg())).fill(theme::accent()).min_size(vec2(28.0,24.0))).on_hover_text("Stop preview (Space)").clicked() { stop=true; }
                 ui.vertical(|ui|{ ui.spacing_mut().item_spacing.y=0.0;
                     ui.add(egui::Label::new(egui::RichText::new(&title).strong().size(12.5)).truncate());
-                    ui.label(egui::RichText::new(match (&error,&ready) { (Some(e),_)=>format!("Cannot play: {e}"), (None,None)=>"Loading…".into(), (None,Some((_,an)))=>format!("Preview · original tempo {:.1} BPM · {}",an.bpm,an.key) }).size(10.5).color(if error.is_some() {C::LIGHT_RED} else {DIM}));
+                    ui.label(egui::RichText::new(match (&error,&ready) { (Some(e),_)=>format!("Cannot play: {e}"), (None,None)=>"Loading…".into(), (None,Some((_,an)))=>format!("Preview · original tempo {:.1} BPM · {}",an.bpm,an.key) }).size(10.5).color(if error.is_some() {C::LIGHT_RED} else {theme::dim()}));
                 });
                 let Some((_,an))=&ready else { if error.is_none() { ui.spinner(); } return; };
                 let pos=sec_at(an,self.engine_beat()).clamp(0.0,an.duration);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                    ui.label(egui::RichText::new(format!("{} / {}",fmt_t(pos),fmt_t(an.duration))).size(11.5).color(DIM).monospace());
+                    ui.label(egui::RichText::new(format!("{} / {}",fmt_t(pos),fmt_t(an.duration))).size(11.5).color(theme::dim()).monospace());
                     let (rect,response)=ui.allocate_exact_size(vec2(ui.available_width().max(80.0),30.0),Sense::click_and_drag());
-                    let painter=ui.painter_at(rect); painter.rect_filled(rect,Rounding::same(4.0),BG);
+                    let painter=ui.painter_at(rect); painter.rect_filled(rect,Rounding::same(4.0),theme::bg());
                     let n=an.peaks.len().max(1); let columns=(rect.width()/2.0) as usize;
                     for c in 0..columns { let lo=c*n/columns; let hi=((c+1)*n/columns).max(lo+1).min(n);
                         let v=an.peaks.get(lo..hi).map(|p|p.iter().map(|x|x[0].max(x[1]).max(x[2])).max().unwrap_or(0)).unwrap_or(0) as f32/255.0;
                         let x=rect.left()+c as f32*2.0+1.0; let h=(v*rect.height()*0.9).max(1.0);
                         let played=(c as f32)/(columns as f32)<=(pos/an.duration) as f32;
-                        painter.line_segment([pos2(x,rect.center().y-h*0.5),pos2(x,rect.center().y+h*0.5)],Stroke::new(1.5_f32,if played {ACCENT} else {C::from_rgb(110,112,120)}));
+                        painter.line_segment([pos2(x,rect.center().y-h*0.5),pos2(x,rect.center().y+h*0.5)],Stroke::new(1.5_f32,if played {theme::accent()} else {C::from_rgb(110,112,120)}));
                     }
-                    let x=rect.left()+rect.width()*(pos/an.duration) as f32; painter.line_segment([pos2(x,rect.top()),pos2(x,rect.bottom())],Stroke::new(1.5_f32,TXT));
+                    let x=rect.left()+rect.width()*(pos/an.duration) as f32; painter.line_segment([pos2(x,rect.top()),pos2(x,rect.bottom())],Stroke::new(1.5_f32,theme::txt()));
                     if let Some(p)=response.interact_pointer_pos() { if response.clicked() || response.dragged() { seek=Some(beat_at(an,((p.x-rect.left())/rect.width()).clamp(0.0,1.0) as f64*an.duration)); } }
                     response.on_hover_text("Click or drag to jump");
                 });

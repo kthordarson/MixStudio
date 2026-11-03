@@ -36,7 +36,7 @@ impl App {
                 ui.label(format!("Whole source · sample peak {} · stereo RMS {}",crate::levels::dbfs(levels.peak),crate::levels::dbfs(levels.rms)));
                 let gain=crate::levels::amplitude(self.mix.tracks[i].gain_db);
                 ui.label(format!("With song gain only · peak {} · RMS {}",crate::levels::dbfs(levels.peak*gain),crate::levels::dbfs(levels.rms*gain)));
-                ui.label(egui::RichText::new("Includes all source silence. Source estimates exclude arrangement, stems, transitions, deck processing and master. RMS is not LUFS or perceived loudness.").color(DIM));
+                ui.label(egui::RichText::new("Includes all source silence. Source estimates exclude arrangement, stems, transitions, deck processing and master. RMS is not LUFS or perceived loudness.").color(theme::dim()));
             }
         }
     }
@@ -59,17 +59,17 @@ impl App {
         });
         self.set_master_levels(gain,output);
         if !output.enabled {ui.colored_label(C::LIGHT_YELLOW,"Bypass: output can exceed 0 dBFS and clip at the device or in encoded files.");}
-        ui.label(egui::RichText::new("Sample-peak soft clipping, not a true-peak limiter. Master gain affects music; the click has independent volume and shares the output ceiling.").color(DIM));
+        ui.label(egui::RichText::new("Sample-peak soft clipping, not a true-peak limiter. Master gain affects music; the click has independent volume and shares the output ceiling.").color(theme::dim()));
         let pre=Shared::get(&self.out.shared.pre_peak);let post=Shared::get(&self.out.shared.post_peak);let ratio=Shared::get(&self.out.shared.min_ratio);
         ui.horizontal_wrapped(|ui| {
-            ui.colored_label(if pre>1.0 {C::LIGHT_RED}else{TXT},format!("Before clipper · peak hold {}",crate::levels::dbfs(pre)));
-            ui.colored_label(if post>1.0 {C::LIGHT_RED}else{TXT},format!("Output · peak hold {}",crate::levels::dbfs(post)));
+            ui.colored_label(if pre>1.0 {C::LIGHT_RED}else{theme::txt()},format!("Before clipper · peak hold {}",crate::levels::dbfs(pre)));
+            ui.colored_label(if post>1.0 {C::LIGHT_RED}else{theme::txt()},format!("Output · peak hold {}",crate::levels::dbfs(post)));
             ui.label(format!("Peak soft-clip attenuation {:.1} dB",-20.0*ratio.max(1e-6).log10()));
             if ui.button("Reset peak holds").clicked() {let _=self.out.tx.send(Cmd::ResetLevels);}
         });
         ui.small("Reset starts with the next complete device block; paused holds clear on the next callback.");
         if pre>1.0 {ui.colored_label(C::LIGHT_YELLOW,"The summed input exceeded 0 dBFS. Lower song, deck or master gain if you want less clipping.");}
-        ui.label(egui::RichText::new("Peak holds cover audio consumed by the device since reset. Playback meters and the metronome are excluded from export; gain and clipper settings are included.").color(DIM));
+        ui.label(egui::RichText::new("Peak holds cover audio consumed by the device since reset. Playback meters and the metronome are excluded from export; gain and clipper settings are included.").color(theme::dim()));
         ui.separator();
     }
 }

@@ -874,6 +874,7 @@ fn tempo_support(onset:&[f32],fps:f64,bpm:f64)->f64 {
 }
 
 /// Full beat analysis: global BPM, estimated first downbeat and beat-map seconds.
+#[allow(dead_code)]
 pub fn detect_beats(m: &[f32], sr: u32) -> (f64, f64, Vec<f64>) {
     let (bpm,offset,beats,_)=detect_rhythm(m,sr);(bpm,offset,beats)
 }
