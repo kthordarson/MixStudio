@@ -2307,17 +2307,21 @@ impl eframe::App for App {
 
 fn seg_button(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
     ui.add(
-        egui::Button::new(egui::RichText::new(text).color(if on { theme::accent() } else { theme::txt() }))
-            .fill(if on {
-                C::from_rgb(60, 58, 20)
-            } else {
-                C::TRANSPARENT
-            })
-            .stroke(if on {
-                Stroke::new(1.0_f32, theme::accent())
-            } else {
-                Stroke::NONE
-            }),
+        egui::Button::new(egui::RichText::new(text).color(if on {
+            theme::accent()
+        } else {
+            theme::txt()
+        }))
+        .fill(if on {
+            C::from_rgb(60, 58, 20)
+        } else {
+            C::TRANSPARENT
+        })
+        .stroke(if on {
+            Stroke::new(1.0_f32, theme::accent())
+        } else {
+            Stroke::NONE
+        }),
     )
 }
 
@@ -2387,8 +2391,10 @@ impl App {
                             self.status.clone()
                         };
                         ui.add(
-                            egui::Label::new(egui::RichText::new(&text).color(theme::dim()).size(12.0))
-                                .truncate(),
+                            egui::Label::new(
+                                egui::RichText::new(&text).color(theme::dim()).size(12.0),
+                            )
+                            .truncate(),
                         )
                         .on_hover_text(text);
                     });
@@ -2548,7 +2554,11 @@ impl App {
                 p.rect_filled(Rect::from_min_max(pos2(x, y0), pos2(x + 9.0, y1)), 0.0, col);
             }
         }
-        let col = if self.mix.output.enabled { theme::accent() } else { theme::dim() };
+        let col = if self.mix.output.enabled {
+            theme::accent()
+        } else {
+            theme::dim()
+        };
         p.circle_stroke(c, 11.0, Stroke::new(2.0_f32, col));
         p.text(
             c,
@@ -2583,7 +2593,10 @@ impl App {
                     c + vec2(a.cos(), a.sin()) * 11.0
                 })
                 .collect();
-            p.add(egui::Shape::line(pts, Stroke::new(2.0_f32, theme::accent())));
+            p.add(egui::Shape::line(
+                pts,
+                Stroke::new(2.0_f32, theme::accent()),
+            ));
         }
         let txt = if label == "Filter" {
             format!("{:.0}", *v * 100.0)
@@ -2755,7 +2768,11 @@ impl App {
             Stroke::new(2.0_f32, C::from_rgb(120, 118, 20)),
         );
         for t in &self.mix.tracks {
-            p.circle_filled(pos2(mxf(t.vis_start(bpm)), mini.center().y), 2.0, theme::accent());
+            p.circle_filled(
+                pos2(mxf(t.vis_start(bpm)), mini.center().y),
+                2.0,
+                theme::accent(),
+            );
         }
         p.rect_stroke(
             Rect::from_min_max(
@@ -3102,7 +3119,11 @@ impl App {
                     format!("{} - {}", t.artist, t.title)
                 },
                 FontId::proportional(if sample { 9.5 } else { 10.5 }),
-                if sample && t.lane == 2 { C::BLACK } else { theme::txt() },
+                if sample && t.lane == 2 {
+                    C::BLACK
+                } else {
+                    theme::txt()
+                },
             );
             let wave = Rect::from_min_max(
                 pos2(cr.left(), tr.bottom() + if sample { 0.0 } else { 12.0 }),
@@ -5254,7 +5275,14 @@ impl App {
             } else {
                 Rect::from_min_size(pos2(h.right() - 2.0 * bw - 6.0, ty - 7.0), vec2(bw, 14.0))
             };
-            if Self::small_btn(ui, ui.id().with(("solo", lane)), sr_, "S", d.solo, theme::accent()) {
+            if Self::small_btn(
+                ui,
+                ui.id().with(("solo", lane)),
+                sr_,
+                "S",
+                d.solo,
+                theme::accent(),
+            ) {
                 d.solo = !d.solo;
             }
             let mr_ = if deck {
@@ -5315,7 +5343,11 @@ impl App {
             }
         }
         if y < area.bottom() {
-            p.rect_filled(Rect::from_min_max(pos2(area.left(), y), area.max), 0.0, theme::bg());
+            p.rect_filled(
+                Rect::from_min_max(pos2(area.left(), y), area.max),
+                0.0,
+                theme::bg(),
+            );
         }
     }
 }
@@ -5983,8 +6015,12 @@ fn chip(ui: &mut egui::Ui, text: impl Into<String>, col: C) {
 /// Framed on/off button for filters, visible in both states.
 fn toggle_button(ui: &mut egui::Ui, on: &mut bool, text: &str) -> egui::Response {
     let r = ui.add(
-        egui::Button::new(egui::RichText::new(text).color(if *on { theme::accent() } else { theme::txt() }))
-            .selected(*on),
+        egui::Button::new(egui::RichText::new(text).color(if *on {
+            theme::accent()
+        } else {
+            theme::txt()
+        }))
+        .selected(*on),
     );
     if r.clicked() {
         *on = !*on;

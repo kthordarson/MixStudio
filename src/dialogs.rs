@@ -1,4 +1,4 @@
-//! Native file dialogs with fallbacks: XDG desktop portal (through rfd), then kdialog, then zenity.
+//! Native file dialogs: the system dialog on Windows/macOS; elsewhere XDG desktop portal (through rfd), then kdialog, then zenity.
 //! Always call from a background thread; every function blocks until the user closes the dialog.
 //! `Ok(None)` means the user cancelled, `Err` means no dialog could be shown.
 use std::path::PathBuf;
@@ -80,6 +80,8 @@ fn via_zenity(r: &Req) -> Result<Option<Vec<PathBuf>>, String> {
 
 /// Which backends would be tried, in order (for diagnostics: `mixstudio --dialog-check`).
 pub fn backends() -> Vec<(&'static str, Result<(), String>)> {
+    // Windows and macOS: rfd opens the system dialog directly; the portal/kdialog/zenity chain is for Linux and the BSDs.
+    if cfg!(any(windows, target_os = "macos")) { return vec![("native", Ok(()))]; }
     let forced = std::env::var("MIXSTUDIO_DIALOG").ok();
     let all = [("portal", portal_ok()),
         ("kdialog", if has("kdialog") { Ok(()) } else { Err("not installed".into()) }),
@@ -92,7 +94,7 @@ pub fn run(r: Req) -> Result<Option<Vec<PathBuf>>, String> {
     let mut errs = vec![];
     for (name, ok) in backends() {
         if let Err(e) = ok { errs.push(format!("{name}: {e}")); continue; }
-        let res = match name { "portal" => via_rfd(&r), "kdialog" => via_kdialog(&r), _ => via_zenity(&r) };
+        let res = match name { "portal" | "native" => via_rfd(&r), "kdialog" => via_kdialog(&r), _ => via_zenity(&r) };
         match res {
             Ok(v) => return Ok(v),
             Err(e) => { eprintln!("file dialog via {name} failed: {e}"); errs.push(format!("{name}: {e}")); }
