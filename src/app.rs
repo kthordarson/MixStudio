@@ -233,6 +233,8 @@ pub struct App {
     auto_drag: Option<(usize, usize)>,
     auto_rect: Rect,
     vzoom: bool,
+    /// User-dragged heights for deck 1, deck 2, samples 1-2 and the tempo lane; `None` = automatic.
+    lane_h: [Option<f32>; 5],
     tc_side: usize,
     tc_drag: Option<usize>,
     fx_sel: Option<usize>,
@@ -557,6 +559,7 @@ impl App {
             auto_drag: None,
             auto_rect: Rect::NOTHING,
             vzoom: false,
+            lane_h: [None; 5],
             tc_side: 0,
             tc_drag: None,
             fx_sel: None,
@@ -2803,15 +2806,11 @@ impl App {
         let ruler = Rect::from_min_max(area.min, pos2(area.right(), area.top() + RULER_H));
         let mut y = ruler.bottom();
         let mut rows = vec![];
-        let deck_h = ((area.bottom() - y - 2.0 * SAMPLE_H - TEMPO_H) / 2.0).clamp(96.0, 230.0)
-            * if self.vzoom { 1.8 } else { 1.0 };
-        for (lane, h) in [
-            (0usize, deck_h),
-            (1, deck_h),
-            (2, SAMPLE_H),
-            (3, SAMPLE_H),
-            (4, TEMPO_H),
-        ] {
+        let vz = if self.vzoom { 1.8 } else { 1.0 };
+        let deck_h = ((area.bottom() - y - 2.0 * SAMPLE_H - TEMPO_H) / 2.0).clamp(96.0, 230.0);
+        let auto_h = [deck_h, deck_h, SAMPLE_H, SAMPLE_H, TEMPO_H];
+        for lane in 0..5 {
+            let h = self.lane_h[lane].unwrap_or(auto_h[lane]) * if lane < 2 { vz } else { 1.0 };
             rows.push((
                 lane,
                 Rect::from_min_max(pos2(area.left(), y), pos2(area.right(), y + h)),
@@ -5340,6 +5339,21 @@ impl App {
                     FontId::proportional(10.0),
                     theme::txt(),
                 );
+            }
+        }
+        // Lane resize handles on each lane's bottom edge; registered last so they win over clips. Double-click resets.
+        for &(lane, r) in &rows {
+            let hr = Rect::from_center_size(pos2(r.center().x, r.bottom()), vec2(r.width(), 6.0));
+            let resp = ui.interact(hr, ui.id().with(("lane_resize", lane)), Sense::click_and_drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeVertical);
+            if resp.hovered() || resp.dragged() {
+                p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(2.0_f32, theme::accent()));
+            }
+            if resp.double_clicked() { self.lane_h[lane] = None; }
+            else if resp.dragged() {
+                let (min, scale) = if lane < 2 { (96.0, vz) } else if lane < 4 { (24.0, 1.0) } else { (14.0, 1.0) };
+                let cur = self.lane_h[lane].unwrap_or(auto_h[lane]);
+                self.lane_h[lane] = Some((cur + resp.drag_delta().y / scale).clamp(min, 800.0));
             }
         }
         if y < area.bottom() {
