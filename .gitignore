@@ -9,3 +9,6 @@
 .cache/
 /release/
 tools/model-cache/
+*.pyc
+__pycache__/
+results.json
