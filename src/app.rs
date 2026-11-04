@@ -994,13 +994,16 @@ impl App {
             .map_err(|e| e.to_string())
             .and_then(|s| serde_json::from_str::<Mix>(&s).map_err(|e| e.to_string()))
         {
-            Ok(mix) => self.request_project(persistence::Target {
-                mix,
-                file: Some(p),
-                clean: true,
-                restored: None,
-                original: None,
-            }),
+            Ok(mut mix) => {
+                crate::validation::repair_mix(&mut mix);
+                self.request_project(persistence::Target {
+                    mix,
+                    file: Some(p),
+                    clean: true,
+                    restored: None,
+                    original: None,
+                })
+            }
             Err(e) => self.status = format!("Could not read the mix file: {e}"),
         }
     }
@@ -1658,7 +1661,11 @@ impl App {
                 *c = (0..=4)
                     .map(|k| {
                         let x = k as f32 / 4.0;
-                        (x, engine::preset_gain(t.preset, x, side == 0))
+                        // f32 cos(π/2) is slightly negative; validation requires 0..=4
+                        (
+                            x,
+                            engine::preset_gain(t.preset, x, side == 0).clamp(0.0, 1.0),
+                        )
                     })
                     .collect();
             }
@@ -4773,7 +4780,11 @@ impl App {
         if let Some((ti, what, x, v)) = auto_act {
             if ti < self.mix.tracks.len() {
                 match what {
-                    100 => self.set_auto_track(if self.auto_track == Some(ti) { None } else { Some(ti) }),
+                    100 => self.set_auto_track(if self.auto_track == Some(ti) {
+                        None
+                    } else {
+                        Some(ti)
+                    }),
                     110..=114 => self.auto_param = (what - 110) as usize,
                     115 => self.auto_solo = !self.auto_solo,
                     0 => {
@@ -5314,17 +5325,41 @@ impl App {
                 }
                 // A: automation for this deck's clip (under the playhead, else nearest the view centre).
                 let ar = mr_.translate(vec2(0.0, 17.0));
-                let on = self.auto_track.and_then(|i| self.mix.tracks.get(i)).is_some_and(|t| t.lane == lane);
+                let on = self
+                    .auto_track
+                    .and_then(|i| self.mix.tracks.get(i))
+                    .is_some_and(|t| t.lane == lane);
                 let centre = xb((tl_x0 + area.right()) / 2.0);
-                let pick = self.mix.tracks.iter().enumerate().filter(|(_, t)| t.lane == lane)
+                let pick = self
+                    .mix
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.lane == lane)
                     .map(|(i, t)| {
                         let (a, b) = (t.vis_start(bpm), t.end(bpm));
-                        let d = if (a..b).contains(&beat_now) { -1.0 } else { (a - centre).abs().min((b - centre).abs()) };
+                        let d = if (a..b).contains(&beat_now) {
+                            -1.0
+                        } else {
+                            (a - centre).abs().min((b - centre).abs())
+                        };
                         (i, d)
                     })
-                    .min_by(|x, y| x.1.total_cmp(&y.1)).map(|(i, _)| i);
-                if Self::small_btn(ui, ui.id().with(("aut", lane)), ar, "A", on, C::from_rgb(255, 120, 60)) {
-                    if on { self.set_auto_track(None); } else if pick.is_some() { self.set_auto_track(pick); }
+                    .min_by(|x, y| x.1.total_cmp(&y.1))
+                    .map(|(i, _)| i);
+                if Self::small_btn(
+                    ui,
+                    ui.id().with(("aut", lane)),
+                    ar,
+                    "A",
+                    on,
+                    C::from_rgb(255, 120, 60),
+                ) {
+                    if on {
+                        self.set_auto_track(None);
+                    } else if pick.is_some() {
+                        self.set_auto_track(pick);
+                    }
                 }
                 ui.interact(ar, ui.id().with(("aut_tip", lane)), Sense::hover()).on_hover_text(if pick.is_some() {
                     "Automation for this deck's clip under the playhead (or nearest the view centre)"
@@ -5336,25 +5371,51 @@ impl App {
                     pos2(h.left() + 6.0, h.bottom() - 22.0),
                     vec2(HEAD_W - 30.0, 16.0),
                 );
-                let sr = ui.interact(sa, ui.id().with(("auto_show", lane)), Sense::click())
+                let sr = ui
+                    .interact(sa, ui.id().with(("auto_show", lane)), Sense::click())
                     .on_hover_text("Automation curves to show: all, or only the one being edited");
                 let pid = ui.id().with(("auto_show_pop", lane));
-                if sr.clicked() { ui.memory_mut(|m| m.toggle_popup(pid)); }
-                egui::popup::popup_below_widget(ui, pid, &sr, egui::PopupCloseBehavior::CloseOnClick, |ui| {
-                    ui.set_min_width(110.0);
-                    if ui.selectable_label(!self.auto_solo, "Show all").clicked() { self.auto_solo = false; }
-                    for (k, n) in crate::model::AUTO_PARAMS.iter().enumerate() {
-                        if ui.selectable_label(self.auto_solo && self.auto_param == k, *n).clicked() {
-                            self.auto_solo = true;
-                            self.auto_param = k;
+                if sr.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(pid));
+                }
+                egui::popup::popup_below_widget(
+                    ui,
+                    pid,
+                    &sr,
+                    egui::PopupCloseBehavior::CloseOnClick,
+                    |ui| {
+                        ui.set_min_width(110.0);
+                        if ui.selectable_label(!self.auto_solo, "Show all").clicked() {
+                            self.auto_solo = false;
                         }
-                    }
-                });
-                p.rect_filled(sa, 3.0, if sr.hovered() { C::from_rgb(62, 64, 70) } else { C::from_rgb(48, 50, 56) });
+                        for (k, n) in crate::model::AUTO_PARAMS.iter().enumerate() {
+                            if ui
+                                .selectable_label(self.auto_solo && self.auto_param == k, *n)
+                                .clicked()
+                            {
+                                self.auto_solo = true;
+                                self.auto_param = k;
+                            }
+                        }
+                    },
+                );
+                p.rect_filled(
+                    sa,
+                    3.0,
+                    if sr.hovered() {
+                        C::from_rgb(62, 64, 70)
+                    } else {
+                        C::from_rgb(48, 50, 56)
+                    },
+                );
                 p.text(
                     pos2(sa.left() + 6.0, sa.center().y),
                     Align2::LEFT_CENTER,
-                    if self.auto_solo { crate::model::AUTO_PARAMS[self.auto_param.min(4)] } else { "Show all" },
+                    if self.auto_solo {
+                        crate::model::AUTO_PARAMS[self.auto_param.min(4)]
+                    } else {
+                        "Show all"
+                    },
                     FontId::proportional(10.0),
                     theme::txt(),
                 );
@@ -5370,14 +5431,29 @@ impl App {
         // Lane resize handles on each lane's bottom edge; registered last so they win over clips. Double-click resets.
         for &(lane, r) in &rows {
             let hr = Rect::from_center_size(pos2(r.center().x, r.bottom()), vec2(r.width(), 6.0));
-            let resp = ui.interact(hr, ui.id().with(("lane_resize", lane)), Sense::click_and_drag())
+            let resp = ui
+                .interact(
+                    hr,
+                    ui.id().with(("lane_resize", lane)),
+                    Sense::click_and_drag(),
+                )
                 .on_hover_cursor(egui::CursorIcon::ResizeVertical);
             if resp.hovered() || resp.dragged() {
-                p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(2.0_f32, theme::accent()));
+                p.line_segment(
+                    [r.left_bottom(), r.right_bottom()],
+                    Stroke::new(2.0_f32, theme::accent()),
+                );
             }
-            if resp.double_clicked() { self.lane_h[lane] = None; }
-            else if resp.dragged() {
-                let (min, scale) = if lane < 2 { (96.0, vz) } else if lane < 4 { (24.0, 1.0) } else { (14.0, 1.0) };
+            if resp.double_clicked() {
+                self.lane_h[lane] = None;
+            } else if resp.dragged() {
+                let (min, scale) = if lane < 2 {
+                    (96.0, vz)
+                } else if lane < 4 {
+                    (24.0, 1.0)
+                } else {
+                    (14.0, 1.0)
+                };
                 let cur = self.lane_h[lane].unwrap_or(auto_h[lane]);
                 self.lane_h[lane] = Some((cur + resp.drag_delta().y / scale).clamp(min, 800.0));
             }
