@@ -2623,6 +2623,16 @@ impl App {
         resp.on_hover_text(format!("{label}: drag up/down, double-click = reset"));
     }
 
+    /// Show automation on `ti` (or hide it); a clip in plain stem view switches to stem-volume automation.
+    fn set_auto_track(&mut self, ti: Option<usize>) {
+        self.auto_track = ti;
+        if let Some(ti) = ti {
+            if self.mix.tracks[ti].stem_view == 1 {
+                self.snapshot();
+                self.mix.tracks[ti].stem_view = 2;
+            }
+        }
+    }
     fn small_btn(ui: &mut egui::Ui, id: egui::Id, r: Rect, t: &str, on: bool, oncol: C) -> bool {
         let resp = ui.interact(r, id, Sense::click());
         let p = ui.painter();
@@ -4763,17 +4773,7 @@ impl App {
         if let Some((ti, what, x, v)) = auto_act {
             if ti < self.mix.tracks.len() {
                 match what {
-                    100 => {
-                        self.auto_track = if self.auto_track == Some(ti) {
-                            None
-                        } else {
-                            Some(ti)
-                        };
-                        if self.auto_track.is_some() && self.mix.tracks[ti].stem_view == 1 {
-                            self.snapshot();
-                            self.mix.tracks[ti].stem_view = 2;
-                        }
-                    }
+                    100 => self.set_auto_track(if self.auto_track == Some(ti) { None } else { Some(ti) }),
                     110..=114 => self.auto_param = (what - 110) as usize,
                     115 => self.auto_solo = !self.auto_solo,
                     0 => {
@@ -5300,14 +5300,6 @@ impl App {
                 d.mute = !d.mute;
             }
             if deck {
-                Self::small_btn(
-                    ui,
-                    ui.id().with(("aut", lane)),
-                    mr_.translate(vec2(0.0, 17.0)),
-                    "A",
-                    false,
-                    theme::accent(),
-                );
                 let ky = h.top() + 44.0;
                 let mut x = h.left() + 16.0;
                 for (k, lab) in ["High", "Mid", "Low", "Filter"].iter().enumerate() {
@@ -5320,15 +5312,49 @@ impl App {
                     Self::knob(ui, ui.id().with(("knob", lane, k)), pos2(x, ky), v, lab);
                     x += 26.0;
                 }
+                // A: automation for this deck's clip (under the playhead, else nearest the view centre).
+                let ar = mr_.translate(vec2(0.0, 17.0));
+                let on = self.auto_track.and_then(|i| self.mix.tracks.get(i)).is_some_and(|t| t.lane == lane);
+                let centre = xb((tl_x0 + area.right()) / 2.0);
+                let pick = self.mix.tracks.iter().enumerate().filter(|(_, t)| t.lane == lane)
+                    .map(|(i, t)| {
+                        let (a, b) = (t.vis_start(bpm), t.end(bpm));
+                        let d = if (a..b).contains(&beat_now) { -1.0 } else { (a - centre).abs().min((b - centre).abs()) };
+                        (i, d)
+                    })
+                    .min_by(|x, y| x.1.total_cmp(&y.1)).map(|(i, _)| i);
+                if Self::small_btn(ui, ui.id().with(("aut", lane)), ar, "A", on, C::from_rgb(255, 120, 60)) {
+                    if on { self.set_auto_track(None); } else if pick.is_some() { self.set_auto_track(pick); }
+                }
+                ui.interact(ar, ui.id().with(("aut_tip", lane)), Sense::hover()).on_hover_text(if pick.is_some() {
+                    "Automation for this deck's clip under the playhead (or nearest the view centre)"
+                } else {
+                    "No clip on this deck"
+                });
+                // Show all / single parameter: which automation curves are drawn.
                 let sa = Rect::from_min_size(
                     pos2(h.left() + 6.0, h.bottom() - 22.0),
                     vec2(HEAD_W - 30.0, 16.0),
                 );
-                p.rect_filled(sa, 3.0, C::from_rgb(48, 50, 56));
+                let sr = ui.interact(sa, ui.id().with(("auto_show", lane)), Sense::click())
+                    .on_hover_text("Automation curves to show: all, or only the one being edited");
+                let pid = ui.id().with(("auto_show_pop", lane));
+                if sr.clicked() { ui.memory_mut(|m| m.toggle_popup(pid)); }
+                egui::popup::popup_below_widget(ui, pid, &sr, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                    ui.set_min_width(110.0);
+                    if ui.selectable_label(!self.auto_solo, "Show all").clicked() { self.auto_solo = false; }
+                    for (k, n) in crate::model::AUTO_PARAMS.iter().enumerate() {
+                        if ui.selectable_label(self.auto_solo && self.auto_param == k, *n).clicked() {
+                            self.auto_solo = true;
+                            self.auto_param = k;
+                        }
+                    }
+                });
+                p.rect_filled(sa, 3.0, if sr.hovered() { C::from_rgb(62, 64, 70) } else { C::from_rgb(48, 50, 56) });
                 p.text(
                     pos2(sa.left() + 6.0, sa.center().y),
                     Align2::LEFT_CENTER,
-                    "Show all",
+                    if self.auto_solo { crate::model::AUTO_PARAMS[self.auto_param.min(4)] } else { "Show all" },
                     FontId::proportional(10.0),
                     theme::txt(),
                 );

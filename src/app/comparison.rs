@@ -3,112 +3,283 @@ use super::*;
 use crate::gridtools::Anchor;
 
 pub(super) struct Comparison {
-    cache:std::cell::RefCell<Option<(Vec<u64>,Track)>>,
-    pub incoming:Option<usize>, pub stamp:Vec<u64>, pub center:f64, pub span:f64,
-    pub anchors:[Option<Anchor>;2], pub slot:usize, pub target:f64,
-    pub proposed:bool, pub audition:u8, pub metro:bool, pub preview_end:Option<f64>, pub restore_loop:Option<(f64,f64)>,
+    cache: std::cell::RefCell<Option<(Vec<u64>, Track)>>,
+    pub incoming: Option<usize>,
+    pub stamp: Vec<u64>,
+    pub center: f64,
+    pub span: f64,
+    pub anchors: [Option<Anchor>; 2],
+    pub slot: usize,
+    pub target: f64,
+    pub proposed: bool,
+    pub audition: u8,
+    pub metro: bool,
+    pub preview_end: Option<f64>,
+    pub restore_loop: Option<(f64, f64)>,
 }
 impl Default for Comparison {
-    fn default()->Self { Self{cache:Default::default(),incoming:None,stamp:vec![],center:0.0,span:8.0,anchors:[None,None],slot:0,target:0.0,proposed:true,audition:0,metro:false,preview_end:None,restore_loop:None} }
+    fn default() -> Self {
+        Self {
+            cache: Default::default(),
+            incoming: None,
+            stamp: vec![],
+            center: 0.0,
+            span: 8.0,
+            anchors: [None, None],
+            slot: 0,
+            target: 0.0,
+            proposed: true,
+            audition: 0,
+            metro: false,
+            preview_end: None,
+            restore_loop: None,
+        }
+    }
 }
 impl App {
-    pub(super) fn transition_members(&self,incoming:usize)->Option<[Vec<usize>;2]> {
-        let (o,i,s,e)=self.mix.logical_transitions().into_iter().find(|x|x.1==incoming)?;
-        let same=|a:usize,b:usize| {
-            let (a,b)=(&self.mix.tracks[a],&self.mix.tracks[b]);
-            a.trans.fragment_group!=0 && a.trans.fragment_group==b.trans.fragment_group && a.path==b.path && a.lane==b.lane
+    pub(super) fn transition_members(&self, incoming: usize) -> Option<[Vec<usize>; 2]> {
+        let (o, i, s, e) = self
+            .mix
+            .logical_transitions()
+            .into_iter()
+            .find(|x| x.1 == incoming)?;
+        let same = |a: usize, b: usize| {
+            let (a, b) = (&self.mix.tracks[a], &self.mix.tracks[b]);
+            a.trans.fragment_group != 0
+                && a.trans.fragment_group == b.trans.fragment_group
+                && a.path == b.path
+                && a.lane == b.lane
         };
-        let mut members=[vec![],vec![]];
-        for (a,b,from,to) in self.mix.transitions() {
-            if from==s && to==e && (a==o || same(a,o)) && (b==i || same(b,i)) {
-                if !members[0].contains(&a) {members[0].push(a);}
-                if !members[1].contains(&b) {members[1].push(b);}
+        let mut members = [vec![], vec![]];
+        for (a, b, from, to) in self.mix.transitions() {
+            if from == s && to == e && (a == o || same(a, o)) && (b == i || same(b, i)) {
+                if !members[0].contains(&a) {
+                    members[0].push(a);
+                }
+                if !members[1].contains(&b) {
+                    members[1].push(b);
+                }
             }
         }
         Some(members)
     }
-    pub(super) fn open_comparison(&mut self,incoming:usize) {
-        let Some((_,_,s,e))=self.mix.logical_transitions().into_iter().find(|x|x.1==incoming) else { return; };
-        self.stop_transition_audition(); self.stop_comparison(); self.sel_in=Some(incoming); self.sel=Some(incoming); self.tab=Tab::Compare;
-        self.comparison=Comparison{incoming:Some(incoming),stamp:self.alignment_stamp(incoming).unwrap_or_default(),center:(s+e)*0.5,target:((s+e)*0.5).round(),..Default::default()};
+    pub(super) fn open_comparison(&mut self, incoming: usize) {
+        let Some((_, _, s, e)) = self
+            .mix
+            .logical_transitions()
+            .into_iter()
+            .find(|x| x.1 == incoming)
+        else {
+            return;
+        };
+        self.stop_transition_audition();
+        self.stop_comparison();
+        self.sel_in = Some(incoming);
+        self.sel = Some(incoming);
+        self.tab = Tab::Compare;
+        self.comparison = Comparison {
+            incoming: Some(incoming),
+            stamp: self.alignment_stamp(incoming).unwrap_or_default(),
+            center: (s + e) * 0.5,
+            target: ((s + e) * 0.5).round(),
+            ..Default::default()
+        };
     }
     pub(super) fn stop_comparison(&mut self) {
-        if self.comparison.audition!=0 {
-            let _=self.out.tx.send(Cmd::Play(false));
-            let range=self.comparison.restore_loop.take(); self.set_loop(range);
-            self.comparison.restore_loop=None;
+        if self.comparison.audition != 0 {
+            let _ = self.out.tx.send(Cmd::Play(false));
+            let range = self.comparison.restore_loop.take();
+            self.set_loop(range);
+            self.comparison.restore_loop = None;
         }
-        self.comparison.audition=0; self.comparison.preview_end=None;
+        self.comparison.audition = 0;
+        self.comparison.preview_end = None;
     }
     pub(super) fn validate_comparison(&mut self) {
-        let valid=self.comparison.incoming.and_then(|i|self.alignment_stamp(i)).as_ref()==Some(&self.comparison.stamp);
-        if self.comparison.incoming.is_some() && (!valid || self.tab!=Tab::Compare) {
+        let valid = self
+            .comparison
+            .incoming
+            .and_then(|i| self.alignment_stamp(i))
+            .as_ref()
+            == Some(&self.comparison.stamp);
+        if self.comparison.incoming.is_some() && (!valid || self.tab != Tab::Compare) {
             self.stop_comparison();
-            if !valid { self.comparison.anchors=[None,None]; self.comparison.stamp.clear(); }
+            if !valid {
+                self.comparison.anchors = [None, None];
+                self.comparison.stamp.clear();
+            }
         }
-        if self.comparison.preview_end.is_some_and(|end|self.beat()>=end) { self.stop_comparison(); }
+        if self
+            .comparison
+            .preview_end
+            .is_some_and(|end| self.beat() >= end)
+        {
+            self.stop_comparison();
+        }
     }
-    pub(super) fn build_playback_snap(&self)->Snap {
-        if let Some(snap)=self.listen_snap() { return snap; }
-        let mut normal=self.build_snap();
+    pub(super) fn build_playback_snap(&self) -> Snap {
+        if let Some(snap) = self.listen_snap() {
+            return snap;
+        }
+        let mut normal = self.build_snap();
         self.filter_transition_audition(&mut normal);
-        if self.tab!=Tab::Compare { return normal; }
-        normal.metro=if self.comparison.metro {Some(self.mix.metro_vol)} else {None};
-        if self.comparison.audition==0 { return normal; }
-        let Some(i)=self.comparison.incoming else { return normal; };
-        if self.alignment_stamp(i).as_ref()!=Some(&self.comparison.stamp) { return normal; }
-        let Some(members)=self.transition_members(i) else {return normal;};
-        let indices=match self.comparison.audition {1=>members[0].clone(),2=>members[1].clone(),_=>members.into_iter().flatten().collect()};
-        let proposed=self.proposed_track();
-        let mut mix=self.mix.clone(); mix.tracks=indices.iter().map(|&k|if k==i {proposed.clone().unwrap_or_else(||self.mix.tracks[k].clone())} else {self.mix.tracks[k].clone()}).collect();
+        if self.tab != Tab::Compare {
+            return normal;
+        }
+        normal.metro = if self.comparison.metro {
+            Some(self.mix.metro_vol)
+        } else {
+            None
+        };
+        if self.comparison.audition == 0 {
+            return normal;
+        }
+        let Some(i) = self.comparison.incoming else {
+            return normal;
+        };
+        if self.alignment_stamp(i).as_ref() != Some(&self.comparison.stamp) {
+            return normal;
+        }
+        let Some(members) = self.transition_members(i) else {
+            return normal;
+        };
+        let indices = match self.comparison.audition {
+            1 => members[0].clone(),
+            2 => members[1].clone(),
+            _ => members.into_iter().flatten().collect(),
+        };
+        let proposed = self.proposed_track();
+        let mut mix = self.mix.clone();
+        mix.tracks = indices
+            .iter()
+            .map(|&k| {
+                if k == i {
+                    proposed
+                        .clone()
+                        .unwrap_or_else(|| self.mix.tracks[k].clone())
+                } else {
+                    self.mix.tracks[k].clone()
+                }
+            })
+            .collect();
         // Hear source attacks before transition curves, EQ, FX and stem automation.
-        mix.decks=[crate::model::Deck::default();4]; mix.fx.clear();
-        for t in &mut mix.tracks { t.auto.clear(); t.stem_mutes.clear(); }
-        let audio:Vec<_>=mix.tracks.iter().map(|t|self.store.get(&t.path).map(|x|x.0.clone())).collect();
-        let mut dry=Snap::build(&mix,&audio); dry.trans.clear(); dry.tcurves.clear(); dry.tempo=normal.tempo; dry.metro=normal.metro; dry
+        mix.decks = [crate::model::Deck::default(); 4];
+        mix.fx.clear();
+        for t in &mut mix.tracks {
+            t.auto.clear();
+            t.stem_mutes.clear();
+        }
+        let audio: Vec<_> = mix
+            .tracks
+            .iter()
+            .map(|t| self.store.get(&t.path).map(|x| x.0.clone()))
+            .collect();
+        let mut dry = Snap::build(&mix, &audio);
+        dry.trans.clear();
+        dry.tcurves.clear();
+        dry.tempo = normal.tempo;
+        dry.metro = normal.metro;
+        dry
     }
-    pub(super) fn start_comparison_preview(&mut self,side:u8,from:f64,to:f64) {
-        self.stop_listen(); self.stop_transition_audition();
-        if from>=to { return; }
-        if self.comparison.audition==0 {
-            self.comparison.restore_loop=self.active_loop;
+    pub(super) fn start_comparison_preview(&mut self, side: u8, from: f64, to: f64) {
+        self.stop_listen();
+        self.stop_transition_audition();
+        if from >= to {
+            return;
+        }
+        if self.comparison.audition == 0 {
+            self.comparison.restore_loop = self.active_loop;
             self.set_loop(None);
         }
-        self.comparison.audition=side; self.comparison.preview_end=Some(to);
+        self.comparison.audition = side;
+        self.comparison.preview_end = Some(to);
         // Queue the audition snapshot before playback, avoiding a frame of the full mix.
-        let _=self.out.snapshot(Arc::new(self.build_playback_snap()));
-        self.seek(from.max(0.0)); let _=self.out.tx.send(Cmd::Play(true));
+        let _ = self.out.snapshot(Arc::new(self.build_playback_snap()));
+        self.seek(from.max(0.0));
+        let _ = self.out.tx.send(Cmd::Play(true));
     }
-    fn proposed_track(&self)->Option<Track> {
-        if !self.comparison.proposed { return None; }
-        let i=self.comparison.incoming?;
-        if self.transition_members(i)?.iter().any(|group|group.len()>1) {return None;}
-        if self.alignment_stamp(i).as_ref()!=Some(&self.comparison.stamp) { return None; }
-        let [Some(a),Some(b)]=self.comparison.anchors else { return None; };
-        let mut key=self.comparison.stamp.clone(); key.extend([a.beat.to_bits(),a.source.to_bits(),b.beat.to_bits(),b.source.to_bits()]);
-        if let Some((saved,track))=self.comparison.cache.borrow().as_ref() { if *saved==key {
-            // Cache timing only: current stretch, fades and metadata remain authoritative.
-            let mut current=self.mix.tracks.get(i)?.clone(); current.bpm=track.bpm; current.offset=track.offset;
-            current.start_beat=track.start_beat; current.map=track.map.clone(); current.grid_mode=track.grid_mode;
-            return Some(current);
-        } }
-        let track=crate::gridtools::anchored(self.mix.tracks.get(i)?,a,b).ok()?.0;
-        *self.comparison.cache.borrow_mut()=Some((key,track.clone())); Some(track)
+    fn proposed_track(&self) -> Option<Track> {
+        if !self.comparison.proposed {
+            return None;
+        }
+        let i = self.comparison.incoming?;
+        if self
+            .transition_members(i)?
+            .iter()
+            .any(|group| group.len() > 1)
+        {
+            return None;
+        }
+        if self.alignment_stamp(i).as_ref() != Some(&self.comparison.stamp) {
+            return None;
+        }
+        let [Some(a), Some(b)] = self.comparison.anchors else {
+            return None;
+        };
+        let mut key = self.comparison.stamp.clone();
+        key.extend([
+            a.beat.to_bits(),
+            a.source.to_bits(),
+            b.beat.to_bits(),
+            b.source.to_bits(),
+        ]);
+        if let Some((saved, track)) = self.comparison.cache.borrow().as_ref() {
+            if *saved == key {
+                // Cache timing only: current stretch, fades and metadata remain authoritative.
+                let mut current = self.mix.tracks.get(i)?.clone();
+                current.bpm = track.bpm;
+                current.offset = track.offset;
+                current.start_beat = track.start_beat;
+                current.map = track.map.clone();
+                current.grid_mode = track.grid_mode;
+                return Some(current);
+            }
+        }
+        let track = crate::gridtools::anchored(self.mix.tracks.get(i)?, a, b)
+            .ok()?
+            .0;
+        *self.comparison.cache.borrow_mut() = Some((key, track.clone()));
+        Some(track)
     }
     pub(super) fn apply_comparison_anchors(&mut self) {
-        if self.arrangement_locked() {return;}
-        let Some(i)=self.comparison.incoming else { return; };
-        if self.transition_members(i).is_some_and(|groups|groups.iter().any(|g|g.len()>1)) {self.status="Correct source grids before splitting clips.".into();return;}
-        if self.alignment_stamp(i).as_ref()!=Some(&self.comparison.stamp) { self.validate_comparison(); self.status="Timing changed. Set the anchors again.".into(); return; }
-        let [Some(a),Some(b)]=self.comparison.anchors else { return; };
-        match crate::gridtools::anchored(&self.mix.tracks[i],a,b) {
-            Ok((track,p))=>{ self.stop_comparison(); self.snapshot(); self.mix.tracks[i]=track; self.beat_check=None;
-                self.comparison.anchors=[None,None]; self.comparison.stamp=self.alignment_stamp(i).unwrap_or_default();
-                self.status=format!("Two-anchor correction: {:.3} BPM ({:+.3}%). Undo: Ctrl+Z.",p.bpm,p.percent);
-            }, Err(e)=>self.status=e,
+        if self.arrangement_locked() {
+            return;
+        }
+        let Some(i) = self.comparison.incoming else {
+            return;
+        };
+        if self
+            .transition_members(i)
+            .is_some_and(|groups| groups.iter().any(|g| g.len() > 1))
+        {
+            self.status = "Correct source grids before splitting clips.".into();
+            return;
+        }
+        if self.alignment_stamp(i).as_ref() != Some(&self.comparison.stamp) {
+            self.validate_comparison();
+            self.status = "Timing changed. Set the anchors again.".into();
+            return;
+        }
+        let [Some(a), Some(b)] = self.comparison.anchors else {
+            return;
+        };
+        match crate::gridtools::anchored(&self.mix.tracks[i], a, b) {
+            Ok((track, p)) => {
+                self.stop_comparison();
+                self.snapshot();
+                self.mix.tracks[i] = track;
+                self.beat_check = None;
+                self.comparison.anchors = [None, None];
+                self.comparison.stamp = self.alignment_stamp(i).unwrap_or_default();
+                self.status = format!(
+                    "Two-anchor correction: {:.3} BPM ({:+.3}%). Undo: Ctrl+Z.",
+                    p.bpm, p.percent
+                );
+            }
+            Err(e) => self.status = e,
         }
     }
-    pub(super) fn comparison_tab(&mut self,ui:&mut egui::Ui) {
+    pub(super) fn comparison_tab(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().id_salt("comparison_workbench").show(ui,|ui| {
             self.beatmatch_ui(ui,true);
             let Some(i)=self.sel_in.filter(|i|self.mix.logical_transitions().iter().any(|x|x.1==*i)) else { return; };
