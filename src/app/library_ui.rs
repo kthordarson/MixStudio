@@ -2,7 +2,11 @@ use super::*;
 
 impl App {
     fn lib_import_settings(&mut self, ui: &mut egui::Ui) {
-        let dim = |s: &str| egui::RichText::new(s.to_string()).color(theme::dim()).size(11.0);
+        let dim = |s: &str| {
+            egui::RichText::new(s.to_string())
+                .color(theme::dim())
+                .size(11.0)
+        };
         ui.separator();
         ui.label(egui::RichText::new("Other DJ software").strong().size(12.0));
         let mut sel: Option<Option<(usize, Vec<usize>)>> = None;
@@ -195,7 +199,8 @@ fn nav_row(ui: &mut egui::Ui, name: &str, count: usize, selected: bool) -> egui:
     } else if response.hovered() {
         painter.rect_filled(rect, Rounding::same(5.0), C::from_rgb(44, 46, 52));
     }
-    let counter = painter.layout_no_wrap(count.to_string(), FontId::proportional(11.0), theme::dim());
+    let counter =
+        painter.layout_no_wrap(count.to_string(), FontId::proportional(11.0), theme::dim());
     let right = rect.right() - 8.0 - counter.size().x;
     painter.galley(
         pos2(right, rect.center().y - counter.size().y * 0.5),
@@ -205,7 +210,11 @@ fn nav_row(ui: &mut egui::Ui, name: &str, count: usize, selected: bool) -> egui:
     let mut job = egui::text::LayoutJob::simple_singleline(
         name.to_string(),
         FontId::proportional(13.0),
-        if selected { theme::accent() } else { theme::txt() },
+        if selected {
+            theme::accent()
+        } else {
+            theme::txt()
+        },
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width((right - rect.left() - 16.0).max(20.0));
     let text = ui.fonts(|f| f.layout_job(job));
@@ -766,7 +775,11 @@ impl App {
                                         | crate::library::FolderState::NotResponding
                                 )
                             ));
-                    let color = if unavailable { theme::dim() } else { theme::txt() };
+                    let color = if unavailable {
+                        theme::dim()
+                    } else {
+                        theme::txt()
+                    };
                     row.col(|ui| {
                         let on = self.listening(&e.path);
                         let button = egui::Button::new(
@@ -774,7 +787,11 @@ impl App {
                                 .size(12.0)
                                 .color(if on { theme::bg() } else { theme::txt() }),
                         )
-                        .fill(if on { theme::accent() } else { C::from_rgb(52, 54, 60) })
+                        .fill(if on {
+                            theme::accent()
+                        } else {
+                            C::from_rgb(52, 54, 60)
+                        })
                         .rounding(Rounding::same(12.0))
                         .min_size(vec2(24.0, 24.0));
                         if ui
@@ -839,7 +856,11 @@ impl App {
                         Some(key) => chip(
                             ui,
                             key.clone(),
-                            if unavailable { theme::dim() } else { key_col(key) },
+                            if unavailable {
+                                theme::dim()
+                            } else {
+                                key_col(key)
+                            },
                         ),
                         None => {
                             ui.label(egui::RichText::new("—").color(theme::dim()));

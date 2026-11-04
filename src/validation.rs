@@ -29,6 +29,21 @@ fn map(m: &BeatMap, field: &str) -> Result<(), String> {
     )
 }
 
+/// Normalize values older builds could write slightly out of range (e.g. a seeded
+/// Crossfade curve ending at cos(π/2) ≈ -4e-8) so such projects stay loadable.
+/// Call on freshly deserialized mixes before `validate_mix`.
+pub fn repair_mix(m: &mut Mix) {
+    for t in &mut m.tracks {
+        for c in [&mut t.trans.curve_out, &mut t.trans.curve_in] {
+            c.retain(|&(b, v)| b.is_finite() && v.is_finite());
+            for p in c.iter_mut() {
+                *p = (p.0.clamp(0.0, 1.0), p.1.clamp(0.0, 4.0));
+            }
+            c.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
+    }
+}
+
 /// Accept legacy duplicate automation times (dragging them is guarded), but
 /// reject non-finite values and corrupt ordering before any indexing/interpolation.
 pub fn validate_mix(m: &Mix) -> Result<(), String> {
@@ -186,6 +201,21 @@ mod tests {
         m.tracks[0].auto = vec![vec![(8.0, 0.1), (8.0, 0.5), (8.0, 0.9)]];
         validate_mix(&m).unwrap();
         validate_mix(&Mix::default()).unwrap();
+    }
+    #[test]
+    fn slightly_out_of_range_transition_curves_are_repaired() {
+        let mut m = fixture();
+        m.tracks[0].trans.curve_out = vec![(0.0, 1.0), (1.0, (std::f32::consts::PI / 2.0).cos())];
+        m.tracks[0].trans.curve_in =
+            vec![(0.6, 0.5), (f32::NAN, 1.0), (0.2, 1.2), (1.0000001, 0.9)];
+        assert!(validate_mix(&m).is_err());
+        repair_mix(&mut m);
+        validate_mix(&m).unwrap();
+        assert_eq!(m.tracks[0].trans.curve_out[1], (1.0, 0.0));
+        assert_eq!(
+            m.tracks[0].trans.curve_in,
+            vec![(0.2, 1.2), (0.6, 0.5), (1.0, 0.9)]
+        );
     }
     #[test]
     fn corrupt_numeric_modes_maps_and_ranges_are_rejected() {
