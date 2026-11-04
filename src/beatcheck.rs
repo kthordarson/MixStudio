@@ -3,87 +3,169 @@
 use crate::{analysis::Audio, model::Track};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Verdict { Stable, Drifting, Uncertain }
+pub enum Verdict {
+    Stable,
+    Drifting,
+    Uncertain,
+}
 #[derive(Clone, Debug)]
 pub struct Report {
-    pub verdict: Verdict, pub offset_ms: f64, pub drift_ms: f64, pub jitter_ms: f64,
-    pub correction_seconds: f64, pub pairs: usize, pub sampled: usize,
+    pub verdict: Verdict,
+    pub offset_ms: f64,
+    pub drift_ms: f64,
+    pub jitter_ms: f64,
+    pub correction_seconds: f64,
+    pub pairs: usize,
+    pub sampled: usize,
     /// Robust line through the per-beat source corrections: (mix beat, source seconds) at the first and last paired beat.
     pub line: [(f64, f64); 2],
     /// False when each track was measured against the shared mix grid separately (drums did not overlap).
     pub paired: bool,
 }
-#[derive(Clone,Debug)]
-pub struct BeatEvidence { pub beat:f64, pub reliable:bool, pub percussion:bool }
+#[derive(Clone, Debug)]
+pub struct BeatEvidence {
+    pub beat: f64,
+    pub reliable: bool,
+    pub percussion: bool,
+}
 
 /// Borrowed stereo samples, so analysis can search its mono rhythm signal (l = r) with the same detectors.
 #[derive(Clone, Copy)]
-pub(crate) struct Ch<'a> { pub l: &'a [f32], pub r: &'a [f32], pub sr: u32 }
-impl<'a> From<&'a Audio> for Ch<'a> { fn from(a: &'a Audio) -> Self { Ch { l: &a.l, r: &a.r, sr: a.sr } } }
+pub(crate) struct Ch<'a> {
+    pub l: &'a [f32],
+    pub r: &'a [f32],
+    pub sr: u32,
+}
+impl<'a> From<&'a Audio> for Ch<'a> {
+    fn from(a: &'a Audio) -> Self {
+        Ch {
+            l: &a.l,
+            r: &a.r,
+            sr: a.sr,
+        }
+    }
+}
 
-fn median(v: &mut [f64]) -> f64 { v.sort_by(f64::total_cmp); let n=v.len(); (v[n/2]+v[(n-1)/2])*0.5 }
+fn median(v: &mut [f64]) -> f64 {
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    (v[n / 2] + v[(n - 1) / 2]) * 0.5
+}
 
 // A local bass-attack envelope, filtered per channel to tolerate opposite stereo polarity.
 // The rise test rejects continuous bass notes, where a slope alone is misleading.
-pub(crate) fn bass_attack(a:Ch, center:f64, period:f64)->Option<f64> { attack(a,center,period) }
-fn attack(a:Ch, center:f64, period:f64)->Option<f64> {
-    if !center.is_finite() || period<=0.0 || a.sr<1000 { return None; }
-    let sr=a.sr as f64; let radius=(period*0.20).min(0.10);
-    let lo=((center-radius-0.08)*sr).max(0.0) as usize;
-    let hi=((center+radius+0.025)*sr).max(0.0) as usize;
-    if hi>=a.l.len().min(a.r.len()) || hi<=lo { return None; }
-    let alpha=1.0-(-2.0*std::f64::consts::PI*150.0/sr).exp();
-    let mut y1=[0.0;2]; let mut y2=[0.0;2]; let mut prev=[0.0;2]; let mut env=Vec::with_capacity(hi-lo);
-    for i in lo..hi { let mut power=0.0;
-        for (c,x) in [a.l[i],a.r[i]].iter().enumerate() {
-            y1[c]+=alpha*(*x as f64-y1[c]); y2[c]+=alpha*(y1[c]-y2[c]);
-            let q=(y2[c]-prev[c])*sr/(2.0*std::f64::consts::PI*60.0); prev[c]=y2[c];
-            power+=y2[c]*y2[c]+q*q;
-        } env.push((power*0.5).sqrt());
+pub(crate) fn bass_attack(a: Ch, center: f64, period: f64) -> Option<f64> {
+    attack(a, center, period)
+}
+fn attack(a: Ch, center: f64, period: f64) -> Option<f64> {
+    if !center.is_finite() || period <= 0.0 || a.sr < 1000 {
+        return None;
     }
-    let lag=(sr*0.001).round().max(1.0) as usize;
-    let begin=(((center-radius)*sr).max(0.0) as usize).saturating_sub(lo).max(lag);
-    let end=(((center+radius)*sr).max(0.0) as usize).saturating_sub(lo).min(env.len());
-    let i=(begin..end).max_by(|&i,&j|(env[i]-env[i-lag]).total_cmp(&(env[j]-env[j-lag])))?;
-    let peak=env.iter().copied().fold(0.0,f64::max);
-    if peak<0.002 || env[i]-env[i-lag]<peak*0.02 { return None; }
-    let win=(sr*0.008).round().max(1.0) as usize;
-    if i<win*2 || i+win>=env.len() { return None; }
-    let pre=env[i-win*2..i-win].iter().sum::<f64>()/win as f64;
-    let post=env[i..i+win].iter().sum::<f64>()/win as f64;
-    if post<pre*1.8+0.001 { return None; }
-    Some((lo+i) as f64/sr-center)
+    let sr = a.sr as f64;
+    let radius = (period * 0.20).min(0.10);
+    let lo = ((center - radius - 0.08) * sr).max(0.0) as usize;
+    let hi = ((center + radius + 0.025) * sr).max(0.0) as usize;
+    if hi >= a.l.len().min(a.r.len()) || hi <= lo {
+        return None;
+    }
+    let alpha = 1.0 - (-2.0 * std::f64::consts::PI * 150.0 / sr).exp();
+    let mut y1 = [0.0; 2];
+    let mut y2 = [0.0; 2];
+    let mut prev = [0.0; 2];
+    let mut env = Vec::with_capacity(hi - lo);
+    for i in lo..hi {
+        let mut power = 0.0;
+        for (c, x) in [a.l[i], a.r[i]].iter().enumerate() {
+            y1[c] += alpha * (*x as f64 - y1[c]);
+            y2[c] += alpha * (y1[c] - y2[c]);
+            let q = (y2[c] - prev[c]) * sr / (2.0 * std::f64::consts::PI * 60.0);
+            prev[c] = y2[c];
+            power += y2[c] * y2[c] + q * q;
+        }
+        env.push((power * 0.5).sqrt());
+    }
+    let lag = (sr * 0.001).round().max(1.0) as usize;
+    let begin = (((center - radius) * sr).max(0.0) as usize)
+        .saturating_sub(lo)
+        .max(lag);
+    let end = (((center + radius) * sr).max(0.0) as usize)
+        .saturating_sub(lo)
+        .min(env.len());
+    let i = (begin..end)
+        .max_by(|&i, &j| (env[i] - env[i - lag]).total_cmp(&(env[j] - env[j - lag])))?;
+    let peak = env.iter().copied().fold(0.0, f64::max);
+    if peak < 0.002 || env[i] - env[i - lag] < peak * 0.02 {
+        return None;
+    }
+    let win = (sr * 0.008).round().max(1.0) as usize;
+    if i < win * 2 || i + win >= env.len() {
+        return None;
+    }
+    let pre = env[i - win * 2..i - win].iter().sum::<f64>() / win as f64;
+    let post = env[i..i + win].iter().sum::<f64>() / win as f64;
+    if post < pre * 1.8 + 0.001 {
+        return None;
+    }
+    Some((lo + i) as f64 / sr - center)
 }
 
 // Broadband high-pass onset energy catches snare/click attacks when the bass is weak.
 // A sharp rise from a quiet local floor is required; continuous tones are rejected.
-fn percussion_attack(a:Ch,center:f64,period:f64)->Option<f64> {
-    if !center.is_finite() || !period.is_finite() || period<=0.0 || a.sr<1000 { return None; }
-    let sr=a.sr as f64; let radius=(period*0.20).min(0.10);
-    let lo=((center-radius-0.060)*sr).max(0.0) as usize; let hi=((center+radius+0.020)*sr).max(0.0) as usize;
-    if hi>=a.l.len().min(a.r.len()) || hi<=lo { return None; }
-    let hp=1.0-(-2.0*std::f64::consts::PI*700.0/sr).exp(); let smooth=1.0-(-1.0/(sr*0.001)).exp();
-    let mut low=[0.0;2]; let mut energy=0.0; let mut env=Vec::with_capacity(hi-lo);
-    for i in lo..hi { let mut p=0.0; for (c,x) in [a.l[i],a.r[i]].into_iter().enumerate() { low[c]+=hp*(x as f64-low[c]); p+=(x as f64-low[c]).powi(2); }
-        energy+=smooth*(p*0.5-energy); env.push(energy.sqrt());
+fn percussion_attack(a: Ch, center: f64, period: f64) -> Option<f64> {
+    if !center.is_finite() || !period.is_finite() || period <= 0.0 || a.sr < 1000 {
+        return None;
     }
-    let lag=(sr*0.002).round().max(1.0) as usize;
-    let begin=(((center-radius)*sr).max(0.0) as usize).saturating_sub(lo).max(lag);
-    let end=(((center+radius)*sr).max(0.0) as usize).saturating_sub(lo).min(env.len());
-    let i=(begin..end).max_by(|&i,&j|(env[i]-env[i-lag]).total_cmp(&(env[j]-env[j-lag])))?;
-    let peak=env.iter().copied().fold(0.0,f64::max); let win=(sr*0.008).round().max(1.0) as usize;
-    if peak<0.008 || i<win*2 || i+win>=env.len() || env[i]-env[i-lag]<peak*0.25 { return None; }
-    let pre=env[i-win*2..i-win].iter().sum::<f64>()/win as f64;
-    let post=env[i..i+win].iter().sum::<f64>()/win as f64;
-    if post<pre*2.5+0.004 { return None; }
-    Some((lo+i) as f64/sr-center)
+    let sr = a.sr as f64;
+    let radius = (period * 0.20).min(0.10);
+    let lo = ((center - radius - 0.060) * sr).max(0.0) as usize;
+    let hi = ((center + radius + 0.020) * sr).max(0.0) as usize;
+    if hi >= a.l.len().min(a.r.len()) || hi <= lo {
+        return None;
+    }
+    let hp = 1.0 - (-2.0 * std::f64::consts::PI * 700.0 / sr).exp();
+    let smooth = 1.0 - (-1.0 / (sr * 0.001)).exp();
+    let mut low = [0.0; 2];
+    let mut energy = 0.0;
+    let mut env = Vec::with_capacity(hi - lo);
+    for i in lo..hi {
+        let mut p = 0.0;
+        for (c, x) in [a.l[i], a.r[i]].into_iter().enumerate() {
+            low[c] += hp * (x as f64 - low[c]);
+            p += (x as f64 - low[c]).powi(2);
+        }
+        energy += smooth * (p * 0.5 - energy);
+        env.push(energy.sqrt());
+    }
+    let lag = (sr * 0.002).round().max(1.0) as usize;
+    let begin = (((center - radius) * sr).max(0.0) as usize)
+        .saturating_sub(lo)
+        .max(lag);
+    let end = (((center + radius) * sr).max(0.0) as usize)
+        .saturating_sub(lo)
+        .min(env.len());
+    let i = (begin..end)
+        .max_by(|&i, &j| (env[i] - env[i - lag]).total_cmp(&(env[j] - env[j - lag])))?;
+    let peak = env.iter().copied().fold(0.0, f64::max);
+    let win = (sr * 0.008).round().max(1.0) as usize;
+    if peak < 0.008 || i < win * 2 || i + win >= env.len() || env[i] - env[i - lag] < peak * 0.25 {
+        return None;
+    }
+    let pre = env[i - win * 2..i - win].iter().sum::<f64>() / win as f64;
+    let post = env[i..i + win].iter().sum::<f64>() / win as f64;
+    if post < pre * 2.5 + 0.004 {
+        return None;
+    }
+    Some((lo + i) as f64 / sr - center)
 }
 /// Attack offset (seconds from `center`) and whether only broadband percussion supported it.
-pub(crate) fn combined_attack(a:Ch,center:f64,period:f64)->Option<(f64,bool)> {
-    let bass=attack(a,center,period); let high=percussion_attack(a,center,period);
-    match (bass,high) {
-        (Some(b),Some(h)) if (b-h).abs()>0.015=>None, // conflicting evidence stays uncertain
-        (Some(b),_)=>Some((b,false)), (None,Some(h))=>Some((h,true)), _=>None,
+pub(crate) fn combined_attack(a: Ch, center: f64, period: f64) -> Option<(f64, bool)> {
+    let bass = attack(a, center, period);
+    let high = percussion_attack(a, center, period);
+    match (bass, high) {
+        (Some(b), Some(h)) if (b - h).abs() > 0.015 => None, // conflicting evidence stays uncertain
+        (Some(b), _) => Some((b, false)),
+        (None, Some(h)) => Some((h, true)),
+        _ => None,
     }
 }
 
@@ -91,243 +173,571 @@ pub(crate) fn combined_attack(a:Ch,center:f64,period:f64)->Option<(f64,bool)> {
 const REACH_BEATS: f64 = 64.0;
 
 // One track's attacks against its own grid: (mix beat, offset in beats, local beat period in source seconds).
-fn grid_attacks(t:&Track,au:&Audio,from:f64,to:f64)->Vec<(f64,f64,f64)> {
-    let g=t.grid(); let lo=from.max(t.vis_start(0.0)).ceil() as i64+1; let hi=to.min(t.end(0.0)).floor() as i64-1;
-    if hi<=lo { return vec![]; }
-    let stride=((hi-lo) as f64/96.0).ceil().max(1.0) as usize; let mut v=vec![];
+fn grid_attacks(t: &Track, au: &Audio, from: f64, to: f64) -> Vec<(f64, f64, f64)> {
+    let g = t.grid();
+    let lo = from.max(t.vis_start(0.0)).ceil() as i64 + 1;
+    let hi = to.min(t.end(0.0)).floor() as i64 - 1;
+    if hi <= lo {
+        return vec![];
+    }
+    let stride = ((hi - lo) as f64 / 96.0).ceil().max(1.0) as usize;
+    let mut v = vec![];
     for k in (lo..hi).step_by(stride) {
-        let beat=k as f64; if g.cuts().any(|c|(c-beat).abs()<0.5) { continue; }
-        let p=g.region_sec(beat+0.5,beat)-g.region_sec(beat-0.5,beat);
-        if let Some((x,_))=combined_attack(au.into(),g.sec(beat),p) { v.push((beat,x/p,p)); }
+        let beat = k as f64;
+        if g.cuts().any(|c| (c - beat).abs() < 0.5) {
+            continue;
+        }
+        let p = g.region_sec(beat + 0.5, beat) - g.region_sec(beat - 0.5, beat);
+        if let Some((x, _)) = combined_attack(au.into(), g.sec(beat), p) {
+            v.push((beat, x / p, p));
+        }
     }
     v
 }
 
 /// Outro/intro overlaps often have drums on only one side at a time. Both clips share the mix grid,
 /// so measure A's attacks (overlap and before) and B's (overlap and after) separately and compare.
-fn grid_relative(a:&Track,aa:&Audio,b:&Track,ab:&Audio,start:f64,end:f64,bpm_at:&impl Fn(f64)->f64)->Option<Report> {
-    let xa=grid_attacks(a,aa,start-REACH_BEATS,end); let xb=grid_attacks(b,ab,start,end+REACH_BEATS);
-    if xa.len()<12 || xb.len()<12 || xb.last()?.0-xb[0].0<16.0 { return None; }
-    let mut av:Vec<_>=xa.iter().map(|p|p.1).collect(); let ma=median(&mut av);
+fn grid_relative(
+    a: &Track,
+    aa: &Audio,
+    b: &Track,
+    ab: &Audio,
+    start: f64,
+    end: f64,
+    bpm_at: &impl Fn(f64) -> f64,
+) -> Option<Report> {
+    let xa = grid_attacks(a, aa, start - REACH_BEATS, end);
+    let xb = grid_attacks(b, ab, start, end + REACH_BEATS);
+    if xa.len() < 12 || xb.len() < 12 || xb.last()?.0 - xb[0].0 < 16.0 {
+        return None;
+    }
+    let mut av: Vec<_> = xa.iter().map(|p| p.1).collect();
+    let ma = median(&mut av);
     // A is the reference: its own grid must hold steady over the measured span, or B would be aligned to a drifting grid.
-    let own:Vec<(f64,f64)>=xa.iter().map(|&(k,x,p)|(k,x*p)).collect(); let amid=(own[0].0+own[own.len()-1].0)*0.5;
-    let aline=fit_line(&own,amid);
-    let mut ad:Vec<_>=xa.iter().map(|p|(p.1-ma).abs()).collect(); let ja=median(&mut ad);
-    let a_ms=60000.0/bpm_at(amid)/(xa.iter().map(|p|p.2).sum::<f64>()/xa.len() as f64);
+    let own: Vec<(f64, f64)> = xa.iter().map(|&(k, x, p)| (k, x * p)).collect();
+    let amid = (own[0].0 + own[own.len() - 1].0) * 0.5;
+    let aline = fit_line(&own, amid);
+    let mut ad: Vec<_> = xa.iter().map(|p| (p.1 - ma).abs()).collect();
+    let ja = median(&mut ad);
+    let a_ms = 60000.0 / bpm_at(amid) / (xa.iter().map(|p| p.2).sum::<f64>() / xa.len() as f64);
     // Drift is what misaligns B; a few outlying A attacks (offbeat bass notes) do not, as only A's median is used.
-    let a_unsteady=(aline[1].1-aline[0].1).abs()*a_ms>8.0;
-    let rel:Vec<(f64,f64)>=xb.iter().map(|&(k,y,p)|(k,(y-ma)*p)).collect();
-    let mid=(rel[0].0+rel[rel.len()-1].0)*0.5; let bpm=bpm_at(mid); if !bpm.is_finite() || bpm<=0.0 { return None; }
-    let period=xb.iter().map(|p|p.2).sum::<f64>()/xb.len() as f64; let ms=60000.0/bpm/period; // source seconds -> mix ms
-    let line=fit_line(&rel,mid); let slope=(line[1].1-line[0].1)/(line[1].0-line[0].0).max(1e-9);
-    let mut dev:Vec<_>=rel.iter().map(|(k,s)|(s-line[0].1-slope*(k-line[0].0)).abs()).collect();
-    let jb=median(&mut dev); let tail=dev[(dev.len()*9/10).min(dev.len()-1)];
-    let mut sv:Vec<_>=rel.iter().map(|p|p.1).collect(); let correction=median(&mut sv);
-    let jitter=(jb*ms).max(ja*60000.0/bpm); let drift=(line[1].1-line[0].1)*ms;
-    let verdict=if a_unsteady || jitter>6.0 || tail*ms>15.0 { Verdict::Uncertain } else if drift.abs()>8.0 { Verdict::Drifting } else { Verdict::Stable };
-    Some(Report{verdict,offset_ms:correction*ms,drift_ms:drift,jitter_ms:jitter,correction_seconds:correction,pairs:xb.len(),sampled:xa.len(),line,paired:false})
+    let a_unsteady = (aline[1].1 - aline[0].1).abs() * a_ms > 8.0;
+    let rel: Vec<(f64, f64)> = xb.iter().map(|&(k, y, p)| (k, (y - ma) * p)).collect();
+    let mid = (rel[0].0 + rel[rel.len() - 1].0) * 0.5;
+    let bpm = bpm_at(mid);
+    if !bpm.is_finite() || bpm <= 0.0 {
+        return None;
+    }
+    let period = xb.iter().map(|p| p.2).sum::<f64>() / xb.len() as f64;
+    let ms = 60000.0 / bpm / period; // source seconds -> mix ms
+    let line = fit_line(&rel, mid);
+    let slope = (line[1].1 - line[0].1) / (line[1].0 - line[0].0).max(1e-9);
+    let mut dev: Vec<_> = rel
+        .iter()
+        .map(|(k, s)| (s - line[0].1 - slope * (k - line[0].0)).abs())
+        .collect();
+    let jb = median(&mut dev);
+    let tail = dev[(dev.len() * 9 / 10).min(dev.len() - 1)];
+    let mut sv: Vec<_> = rel.iter().map(|p| p.1).collect();
+    let correction = median(&mut sv);
+    let jitter = (jb * ms).max(ja * 60000.0 / bpm);
+    let drift = (line[1].1 - line[0].1) * ms;
+    let verdict = if a_unsteady || jitter > 6.0 || tail * ms > 15.0 {
+        Verdict::Uncertain
+    } else if drift.abs() > 8.0 {
+        Verdict::Drifting
+    } else {
+        Verdict::Stable
+    };
+    Some(Report {
+        verdict,
+        offset_ms: correction * ms,
+        drift_ms: drift,
+        jitter_ms: jitter,
+        correction_seconds: correction,
+        pairs: xb.len(),
+        sampled: xa.len(),
+        line,
+        paired: false,
+    })
 }
 
 // Median pairwise slope and median intercept tolerate a few outlying attacks.
-fn fit_line(points:&[(f64,f64)],mid:f64)->[(f64,f64);2] {
-    let mut slopes=vec![];
-    for i in 0..points.len() { for j in i+1..points.len() { if points[j].0-points[i].0>=4.0 { slopes.push((points[j].1-points[i].1)/(points[j].0-points[i].0)); } } }
-    let slope=if slopes.is_empty() {0.0} else {median(&mut slopes)};
-    let mut centred:Vec<_>=points.iter().map(|(x,y)|y-slope*(x-mid)).collect(); let c=median(&mut centred);
-    let at=|x:f64|(x,c+slope*(x-mid));
-    [at(points[0].0),at(points[points.len()-1].0)]
+fn fit_line(points: &[(f64, f64)], mid: f64) -> [(f64, f64); 2] {
+    let mut slopes = vec![];
+    for i in 0..points.len() {
+        for j in i + 1..points.len() {
+            if points[j].0 - points[i].0 >= 4.0 {
+                slopes.push((points[j].1 - points[i].1) / (points[j].0 - points[i].0));
+            }
+        }
+    }
+    let slope = if slopes.is_empty() {
+        0.0
+    } else {
+        median(&mut slopes)
+    };
+    let mut centred: Vec<_> = points.iter().map(|(x, y)| y - slope * (x - mid)).collect();
+    let c = median(&mut centred);
+    let at = |x: f64| (x, c + slope * (x - mid));
+    [at(points[0].0), at(points[points.len() - 1].0)]
 }
 
 /// Read-only evidence for the ignored local-corpus diagnostic; residuals are not ground truth.
 #[cfg(test)]
-pub(crate) fn diagnostic_attacks(a: &Audio, center: f64, period: f64) -> (Option<f64>, Option<f64>, Option<(f64, bool)>) {
-    (attack(a.into(), center, period), percussion_attack(a.into(), center, period), combined_attack(a.into(), center, period))
+pub(crate) fn diagnostic_attacks(
+    a: &Audio,
+    center: f64,
+    period: f64,
+) -> (Option<f64>, Option<f64>, Option<(f64, bool)>) {
+    (
+        attack(a.into(), center, period),
+        percussion_attack(a.into(), center, period),
+        combined_attack(a.into(), center, period),
+    )
 }
 
 #[cfg(test)]
-pub fn measure(a:&Track,aa:&Audio,b:&Track,ab:&Audio,start:f64,end:f64,bpm_at:impl Fn(f64)->f64)->Result<Report,String> {
-    inspect(a,aa,b,ab,start,end,bpm_at).0
+pub fn measure(
+    a: &Track,
+    aa: &Audio,
+    b: &Track,
+    ab: &Audio,
+    start: f64,
+    end: f64,
+    bpm_at: impl Fn(f64) -> f64,
+) -> Result<Report, String> {
+    inspect(a, aa, b, ab, start, end, bpm_at).0
 }
 
 /// Compare paired bass attacks in the shared mix grid. Musical intent is advisory:
 /// only consistent evidence permits an explicitly requested constant correction.
-pub fn inspect(a:&Track, aa:&Audio, b:&Track, ab:&Audio, start:f64, end:f64, bpm_at:impl Fn(f64)->f64)->(Result<Report,String>,Vec<BeatEvidence>) {
-    let mut evidence=vec![];
-    let report=(|| {
-    if !start.is_finite() || !end.is_finite() || end-start<12.0 { return Err("Use a longer overlap with at least 12 clear paired drum attacks.".into()); }
-    if (a.beat_mult-1.0).abs()>1e-9 || (b.beat_mult-1.0).abs()>1e-9 { return Err("Attack comparison currently needs a 1:1 beat ratio on both tracks.".into()); }
-    let ga=a.grid(); let gb=b.grid(); let mut pairs=vec![]; let mut source=vec![]; let mut sampled=0;
-    let stride=((end-start)/64.0).ceil().max(1.0) as usize;
-    for k in ((start.ceil() as i64+1)..(end.floor() as i64-1)).step_by(stride) {
-        let beat=k as f64; sampled+=1;
-        evidence.push(BeatEvidence{beat,reliable:false,percussion:false});
-        if ga.cuts().chain(gb.cuts()).any(|c|(c-beat).abs()<0.5) { continue; }
-        let pa=ga.region_sec(beat+0.5,beat)-ga.region_sec(beat-0.5,beat);
-        let pb=gb.region_sec(beat+0.5,beat)-gb.region_sec(beat-0.5,beat);
-        let bpm=bpm_at(beat); if !bpm.is_finite() || bpm<=0.0 { continue; }
-        if let (Some((x,ha)),Some((y,hb)))=(combined_attack(aa.into(),ga.sec(beat),pa),combined_attack(ab.into(),gb.sec(beat),pb)) {
-            let ev=evidence.last_mut().unwrap(); ev.reliable=true; ev.percussion=ha||hb;
-            let delta=y/pb-x/pa; pairs.push((beat,delta*60000.0/bpm)); source.push(delta*pb);
+pub fn inspect(
+    a: &Track,
+    aa: &Audio,
+    b: &Track,
+    ab: &Audio,
+    start: f64,
+    end: f64,
+    bpm_at: impl Fn(f64) -> f64,
+) -> (Result<Report, String>, Vec<BeatEvidence>) {
+    let mut evidence = vec![];
+    let report = (|| {
+        if !start.is_finite() || !end.is_finite() || end - start < 12.0 {
+            return Err("Use a longer overlap with at least 12 clear paired drum attacks.".into());
         }
-    }
-    if pairs.len()<12 || pairs.len()*2<sampled || pairs.last().zip(pairs.first()).is_none_or(|(last,first)|last.0-first.0<(end-start)*0.6) {
-        return grid_relative(a,aa,b,ab,start,end,&bpm_at).ok_or_else(||format!("Not enough consistent rhythm attacks ({}/{} beats), even around the overlap. Listen and adjust manually.",pairs.len(),sampled));
-    }
-    let mut slopes=vec![];
-    for i in 0..pairs.len() { for j in i+1..pairs.len() { if pairs[j].0-pairs[i].0>=4.0 { slopes.push((pairs[j].1-pairs[i].1)/(pairs[j].0-pairs[i].0)); } } }
-    if slopes.is_empty() { return Err("Not enough attack coverage to measure drift.".into()); }
-    let slope=median(&mut slopes); let mid=(pairs[0].0+pairs.last().unwrap().0)*0.5;
-    let mut centered:Vec<_>=pairs.iter().map(|(x,y)|y-slope*(x-mid)).collect(); let offset=median(&mut centered);
-    let mut deviations:Vec<_>=pairs.iter().map(|(x,y)|(y-offset-slope*(x-mid)).abs()).collect();
-    let jitter=median(&mut deviations); let tail=deviations[(deviations.len()*9/10).min(deviations.len()-1)]; let drift=slope*(pairs.last().unwrap().0-pairs[0].0);
-    let line=fit_line(&pairs.iter().map(|p|p.0).zip(source.iter().copied()).collect::<Vec<_>>(),mid);
-    let correction=median(&mut source);
-    let mut source_spread:Vec<_>=source.iter().map(|s|(s-correction).abs()).collect(); source_spread.sort_by(f64::total_cmp);
-    let source_tail=source_spread[(source_spread.len()*9/10).min(source_spread.len()-1)];
-    let verdict=if jitter>6.0 || tail>15.0 || (drift.abs()<=8.0 && source_tail>0.008) { Verdict::Uncertain } else if drift.abs()>8.0 { Verdict::Drifting } else { Verdict::Stable };
-    Ok(Report {verdict,offset_ms:offset,drift_ms:drift,jitter_ms:jitter,correction_seconds:correction,pairs:pairs.len(),sampled,line,paired:true})
-    })(); (report,evidence)
+        if (a.beat_mult - 1.0).abs() > 1e-9 || (b.beat_mult - 1.0).abs() > 1e-9 {
+            return Err(
+                "Attack comparison currently needs a 1:1 beat ratio on both tracks.".into(),
+            );
+        }
+        let ga = a.grid();
+        let gb = b.grid();
+        let mut pairs = vec![];
+        let mut source = vec![];
+        let mut sampled = 0;
+        let stride = ((end - start) / 64.0).ceil().max(1.0) as usize;
+        for k in ((start.ceil() as i64 + 1)..(end.floor() as i64 - 1)).step_by(stride) {
+            let beat = k as f64;
+            sampled += 1;
+            evidence.push(BeatEvidence {
+                beat,
+                reliable: false,
+                percussion: false,
+            });
+            if ga.cuts().chain(gb.cuts()).any(|c| (c - beat).abs() < 0.5) {
+                continue;
+            }
+            let pa = ga.region_sec(beat + 0.5, beat) - ga.region_sec(beat - 0.5, beat);
+            let pb = gb.region_sec(beat + 0.5, beat) - gb.region_sec(beat - 0.5, beat);
+            let bpm = bpm_at(beat);
+            if !bpm.is_finite() || bpm <= 0.0 {
+                continue;
+            }
+            if let (Some((x, ha)), Some((y, hb))) = (
+                combined_attack(aa.into(), ga.sec(beat), pa),
+                combined_attack(ab.into(), gb.sec(beat), pb),
+            ) {
+                let ev = evidence.last_mut().unwrap();
+                ev.reliable = true;
+                ev.percussion = ha || hb;
+                let delta = y / pb - x / pa;
+                pairs.push((beat, delta * 60000.0 / bpm));
+                source.push(delta * pb);
+            }
+        }
+        if pairs.len() < 12
+            || pairs.len() * 2 < sampled
+            || pairs
+                .last()
+                .zip(pairs.first())
+                .is_none_or(|(last, first)| last.0 - first.0 < (end - start) * 0.6)
+        {
+            return grid_relative(a,aa,b,ab,start,end,&bpm_at).ok_or_else(||format!("Not enough consistent rhythm attacks ({}/{} beats), even around the overlap. Listen and adjust manually.",pairs.len(),sampled));
+        }
+        let mut slopes = vec![];
+        for i in 0..pairs.len() {
+            for j in i + 1..pairs.len() {
+                if pairs[j].0 - pairs[i].0 >= 4.0 {
+                    slopes.push((pairs[j].1 - pairs[i].1) / (pairs[j].0 - pairs[i].0));
+                }
+            }
+        }
+        if slopes.is_empty() {
+            return Err("Not enough attack coverage to measure drift.".into());
+        }
+        let slope = median(&mut slopes);
+        let mid = (pairs[0].0 + pairs.last().unwrap().0) * 0.5;
+        let mut centered: Vec<_> = pairs.iter().map(|(x, y)| y - slope * (x - mid)).collect();
+        let offset = median(&mut centered);
+        let mut deviations: Vec<_> = pairs
+            .iter()
+            .map(|(x, y)| (y - offset - slope * (x - mid)).abs())
+            .collect();
+        let jitter = median(&mut deviations);
+        let tail = deviations[(deviations.len() * 9 / 10).min(deviations.len() - 1)];
+        let drift = slope * (pairs.last().unwrap().0 - pairs[0].0);
+        let line = fit_line(
+            &pairs
+                .iter()
+                .map(|p| p.0)
+                .zip(source.iter().copied())
+                .collect::<Vec<_>>(),
+            mid,
+        );
+        let correction = median(&mut source);
+        let mut source_spread: Vec<_> = source.iter().map(|s| (s - correction).abs()).collect();
+        source_spread.sort_by(f64::total_cmp);
+        let source_tail =
+            source_spread[(source_spread.len() * 9 / 10).min(source_spread.len() - 1)];
+        let verdict = if jitter > 6.0 || tail > 15.0 || (drift.abs() <= 8.0 && source_tail > 0.008)
+        {
+            Verdict::Uncertain
+        } else if drift.abs() > 8.0 {
+            Verdict::Drifting
+        } else {
+            Verdict::Stable
+        };
+        Ok(Report {
+            verdict,
+            offset_ms: offset,
+            drift_ms: drift,
+            jitter_ms: jitter,
+            correction_seconds: correction,
+            pairs: pairs.len(),
+            sampled,
+            line,
+            paired: true,
+        })
+    })();
+    (report, evidence)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{analysis::Audio,model::Track};
-    pub fn track() -> Track { serde_json::from_str(r#"{"path":"test.wav","title":"Test","artist":"Test","bpm":120.0,"offset":0.25,"key":"8A","duration":24.0,"start_beat":0.0,"lane":0,"trans":{"preset":"Crossfade","stems":["Full","Full","Full","Full"]}}"#).unwrap() }
-    fn kicks(shift:f64,drift:f64)->Audio {
-        let sr=16000;let times:Vec<_>=(0..46).map(|i|0.25+i as f64*0.5+shift+drift*i as f64/45.0).collect();
-        let (l,r)=crate::testgen::synth_kicks(&times,24.0,sr);Audio{sr,l,r}
+    use crate::{analysis::Audio, model::Track};
+    pub fn track() -> Track {
+        serde_json::from_str(r#"{"path":"test.wav","title":"Test","artist":"Test","bpm":120.0,"offset":0.25,"key":"8A","duration":24.0,"start_beat":0.0,"lane":0,"trans":{"preset":"Crossfade","stems":["Full","Full","Full","Full"]}}"#).unwrap()
+    }
+    fn kicks(shift: f64, drift: f64) -> Audio {
+        let sr = 16000;
+        let times: Vec<_> = (0..46)
+            .map(|i| 0.25 + i as f64 * 0.5 + shift + drift * i as f64 / 45.0)
+            .collect();
+        let (l, r) = crate::testgen::synth_kicks(&times, 24.0, sr);
+        Audio { sr, l, r }
     }
     #[test]
     #[ignore = "requires MIXSTUDIO_DIAGNOSTIC_PROJECT pointing to local source audio"]
     fn inspect_saved_overlap_without_mutating_project() {
-        let path=std::env::var("MIXSTUDIO_DIAGNOSTIC_PROJECT").unwrap();
-        let mix:crate::model::Mix=serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let (o,i,s,e)=mix.transitions()[0]; let a=&mix.tracks[o]; let b=&mix.tracks[i];
-        let (aa,_)=crate::analysis::load(std::path::Path::new(&a.path)).unwrap();
-        let (ab,_)=crate::analysis::load(std::path::Path::new(&b.path)).unwrap();
-        let result=measure(a,&aa,b,&ab,s,e,|beat|mix.bpm_at(beat)); eprintln!("Saved transition: {result:?}");
-        for (t,audio) in [(a,&aa),(b,&ab)] {
-            for mode in [0,1,2] {
-                let mut t=t.clone();t.grid_mode=mode;let g=t.grid();let mut bass=vec![];let mut high=vec![];
-                for k in s.ceil() as i64+1..e.floor() as i64-1 {
-                    let beat=k as f64;let period=g.sec(beat+0.5)-g.sec(beat-0.5);
-                    bass.push(attack(audio.into(),g.sec(beat),period).map(|v|(v*10000.0).round()/10.0));
-                    high.push(percussion_attack(audio.into(),g.sec(beat),period).map(|v|(v*10000.0).round()/10.0));
+        let path = std::env::var("MIXSTUDIO_DIAGNOSTIC_PROJECT").unwrap();
+        let mix: crate::model::Mix =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let (o, i, s, e) = mix.transitions()[0];
+        let a = &mix.tracks[o];
+        let b = &mix.tracks[i];
+        let (aa, _) = crate::analysis::load(std::path::Path::new(&a.path)).unwrap();
+        let (ab, _) = crate::analysis::load(std::path::Path::new(&b.path)).unwrap();
+        let result = measure(a, &aa, b, &ab, s, e, |beat| mix.bpm_at(beat));
+        eprintln!("Saved transition: {result:?}");
+        for (t, audio) in [(a, &aa), (b, &ab)] {
+            for mode in [0, 1, 2] {
+                let mut t = t.clone();
+                t.grid_mode = mode;
+                let g = t.grid();
+                let mut bass = vec![];
+                let mut high = vec![];
+                for k in s.ceil() as i64 + 1..e.floor() as i64 - 1 {
+                    let beat = k as f64;
+                    let period = g.sec(beat + 0.5) - g.sec(beat - 0.5);
+                    bass.push(
+                        attack(audio.into(), g.sec(beat), period)
+                            .map(|v| (v * 10000.0).round() / 10.0),
+                    );
+                    high.push(
+                        percussion_attack(audio.into(), g.sec(beat), period)
+                            .map(|v| (v * 10000.0).round() / 10.0),
+                    );
                 }
-                eprintln!("{} mode {mode} bass ms {bass:?} percussion ms {high:?}",t.title);
+                eprintln!(
+                    "{} mode {mode} bass ms {bass:?} percussion ms {high:?}",
+                    t.title
+                );
             }
         }
-        if let Ok(dir)=std::env::var("MIXSTUDIO_DIAGNOSTIC_OUTPUT") {
-            let dir=std::path::Path::new(&dir);std::fs::create_dir_all(dir).unwrap();
-            let audio=vec![Some(std::sync::Arc::new(aa)),Some(std::sync::Arc::new(ab))];
-            let snap=std::sync::Arc::new(crate::engine::Snap::build(&mix,&audio));
-            let sr=std::env::var("MIXSTUDIO_DIAGNOSTIC_SR").ok().and_then(|v|v.parse().ok()).unwrap_or(16000);
-            let (l,r)=crate::engine::render_offline(snap,sr,s,e);
-            crate::engine::write_wav(&dir.join("overlap-original.wav"),&l,&r,sr).unwrap();
+        if let Ok(dir) = std::env::var("MIXSTUDIO_DIAGNOSTIC_OUTPUT") {
+            let dir = std::path::Path::new(&dir);
+            std::fs::create_dir_all(dir).unwrap();
+            let audio = vec![Some(std::sync::Arc::new(aa)), Some(std::sync::Arc::new(ab))];
+            let snap = std::sync::Arc::new(crate::engine::Snap::build(&mix, &audio));
+            let sr = std::env::var("MIXSTUDIO_DIAGNOSTIC_SR")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16000);
+            let (l, r) = crate::engine::render_offline(snap, sr, s, e);
+            crate::engine::write_wav(&dir.join("overlap-original.wav"), &l, &r, sr).unwrap();
             if std::env::var_os("MIXSTUDIO_DIAGNOSTIC_SOLOS").is_some() {
-                for deck in 0..2 {let mut solo=mix.clone();solo.decks[1-deck].mute=true;
-                    let (l,r)=crate::engine::render_offline(std::sync::Arc::new(crate::engine::Snap::build(&solo,&audio)),sr,s,e);
-                    crate::engine::write_wav(&dir.join(format!("deck-{deck}.wav")),&l,&r,sr).unwrap();
+                for deck in 0..2 {
+                    let mut solo = mix.clone();
+                    solo.decks[1 - deck].mute = true;
+                    let (l, r) = crate::engine::render_offline(
+                        std::sync::Arc::new(crate::engine::Snap::build(&solo, &audio)),
+                        sr,
+                        s,
+                        e,
+                    );
+                    crate::engine::write_wav(&dir.join(format!("deck-{deck}.wav")), &l, &r, sr)
+                        .unwrap();
                 }
             }
             if std::env::var_os("MIXSTUDIO_DIAGNOSTIC_REANALYSE").is_some() {
-                let mut corrected=mix.clone();
-                for (t,audio) in corrected.tracks.iter_mut().zip(&audio) {
-                    let audio=audio.as_ref().unwrap();let an=crate::analysis::analyse(audio,t.title.clone(),t.artist.clone(),std::path::Path::new(&t.path));
-                    eprintln!("Fresh source {} bpm {} offset {} bridged {}",t.title,an.bpm,an.offset,an.rhythm.as_ref().is_some_and(|e|e.phase_bridged));
-                    t.bpm=an.bpm;t.offset=an.offset;t.map=an.beat_map();t.flex=an.flex_map();t.grid_mode=1;
+                let mut corrected = mix.clone();
+                for (t, audio) in corrected.tracks.iter_mut().zip(&audio) {
+                    let audio = audio.as_ref().unwrap();
+                    let an = crate::analysis::analyse(
+                        audio,
+                        t.title.clone(),
+                        t.artist.clone(),
+                        std::path::Path::new(&t.path),
+                    );
+                    eprintln!(
+                        "Fresh source {} bpm {} offset {} bridged {}",
+                        t.title,
+                        an.bpm,
+                        an.offset,
+                        an.rhythm.as_ref().is_some_and(|e| e.phase_bridged)
+                    );
+                    t.bpm = an.bpm;
+                    t.offset = an.offset;
+                    t.map = an.beat_map();
+                    t.flex = an.flex_map();
+                    t.grid_mode = 1;
                 }
-                let (a,b,s,e)=corrected.transitions()[0];
-                eprintln!("Fresh transition: {:?}",measure(&corrected.tracks[a],audio[a].as_ref().unwrap(),&corrected.tracks[b],audio[b].as_ref().unwrap(),s,e,|beat|corrected.bpm_at(beat)));
-                let snap=std::sync::Arc::new(crate::engine::Snap::build(&corrected,&audio));
-                let (l,r)=crate::engine::render_offline(snap,16000,s,e);
-                crate::engine::write_wav(&dir.join("overlap-updated.wav"),&l,&r,16000).unwrap();
-                std::fs::write(dir.join("updated-grid-mix.json"),serde_json::to_vec_pretty(&corrected).unwrap()).unwrap();
+                let (a, b, s, e) = corrected.transitions()[0];
+                eprintln!(
+                    "Fresh transition: {:?}",
+                    measure(
+                        &corrected.tracks[a],
+                        audio[a].as_ref().unwrap(),
+                        &corrected.tracks[b],
+                        audio[b].as_ref().unwrap(),
+                        s,
+                        e,
+                        |beat| corrected.bpm_at(beat)
+                    )
+                );
+                let snap = std::sync::Arc::new(crate::engine::Snap::build(&corrected, &audio));
+                let (l, r) = crate::engine::render_offline(snap, 16000, s, e);
+                crate::engine::write_wav(&dir.join("overlap-updated.wav"), &l, &r, 16000).unwrap();
+                std::fs::write(
+                    dir.join("updated-grid-mix.json"),
+                    serde_json::to_vec_pretty(&corrected).unwrap(),
+                )
+                .unwrap();
             }
-
         }
-
     }
     #[test]
     fn percussion_without_bass_is_measured_and_weak_beats_are_exposed() {
-        let a=track();
-        let make=|shift:f64| { let sr=16000; let mut l=vec![0.0;sr*24];
-            for k in 0..46 { if k%7==0 { continue; } let at=((0.25+k as f64*0.5+shift)*sr as f64) as usize;
-                for j in 0..400 { l[at+j]=0.7*(j as f32*2.0*std::f32::consts::PI*2400.0/sr as f32).sin()*(-(j as f32)/90.0).exp(); }
+        let a = track();
+        let make = |shift: f64| {
+            let sr = 16000;
+            let mut l = vec![0.0; sr * 24];
+            for k in 0..46 {
+                if k % 7 == 0 {
+                    continue;
+                }
+                let at = ((0.25 + k as f64 * 0.5 + shift) * sr as f64) as usize;
+                for j in 0..400 {
+                    l[at + j] = 0.7
+                        * (j as f32 * 2.0 * std::f32::consts::PI * 2400.0 / sr as f32).sin()
+                        * (-(j as f32) / 90.0).exp();
+                }
             }
-            for (j,x) in l.iter_mut().enumerate() { *x+=0.4*(j as f32*2.0*std::f32::consts::PI*60.0/sr as f32).sin(); }
-            Audio{sr:sr as u32,r:l.clone(),l}
+            for (j, x) in l.iter_mut().enumerate() {
+                *x += 0.4 * (j as f32 * 2.0 * std::f32::consts::PI * 60.0 / sr as f32).sin();
+            }
+            Audio {
+                sr: sr as u32,
+                r: l.clone(),
+                l,
+            }
         };
-        let (report,evidence)=inspect(&a,&make(0.0),&a,&make(0.018),2.0,42.0,|_|120.0);
-        let report=report.unwrap(); assert_eq!(report.verdict,Verdict::Stable,"{report:?}"); assert!((report.offset_ms-18.0).abs()<2.0);
-        assert!(evidence.iter().any(|e|!e.reliable)); assert!(evidence.iter().any(|e|e.reliable && e.percussion));
+        let (report, evidence) = inspect(&a, &make(0.0), &a, &make(0.018), 2.0, 42.0, |_| 120.0);
+        let report = report.unwrap();
+        assert_eq!(report.verdict, Verdict::Stable, "{report:?}");
+        assert!((report.offset_ms - 18.0).abs() < 2.0);
+        assert!(evidence.iter().any(|e| !e.reliable));
+        assert!(evidence.iter().any(|e| e.reliable && e.percussion));
     }
     #[test]
     fn stable_offset_has_signed_source_correction_and_improves_alignment() {
-        for shift in [-0.024,0.018] {
-            let a=track();let mut b=track();let aa=kicks(0.0,0.0);let ab=kicks(shift,0.0);
-            let report=measure(&a,&aa,&b,&ab,2.0,42.0,|_|120.0).unwrap();
-            assert_eq!(report.verdict,Verdict::Stable,"{report:?}");
-            assert!((report.offset_ms-shift*1000.0).abs()<2.0,"{report:?}");
-            b.adjust_grid(crate::model::GridScope::All,16.0,report.correction_seconds).unwrap();
-            let after=measure(&a,&aa,&b,&ab,2.0,42.0,|_|120.0).unwrap();assert!(after.offset_ms.abs()<2.0,"{after:?}");
+        for shift in [-0.024, 0.018] {
+            let a = track();
+            let mut b = track();
+            let aa = kicks(0.0, 0.0);
+            let ab = kicks(shift, 0.0);
+            let report = measure(&a, &aa, &b, &ab, 2.0, 42.0, |_| 120.0).unwrap();
+            assert_eq!(report.verdict, Verdict::Stable, "{report:?}");
+            assert!(
+                (report.offset_ms - shift * 1000.0).abs() < 2.0,
+                "{report:?}"
+            );
+            b.adjust_grid(
+                crate::model::GridScope::All,
+                16.0,
+                report.correction_seconds,
+            )
+            .unwrap();
+            let after = measure(&a, &aa, &b, &ab, 2.0, 42.0, |_| 120.0).unwrap();
+            assert!(after.offset_ms.abs() < 2.0, "{after:?}");
         }
     }
     #[test]
     fn drift_is_reported_without_enabling_a_constant_shift() {
-        let a=track();let aa=kicks(0.0,0.0);let ab=kicks(0.0,0.040);
-        let r=measure(&a,&aa,&a,&ab,2.0,42.0,|_|120.0).unwrap();
-        assert_eq!(r.verdict,Verdict::Drifting,"{r:?}");assert!(r.drift_ms>25.0,"{r:?}");
+        let a = track();
+        let aa = kicks(0.0, 0.0);
+        let ab = kicks(0.0, 0.040);
+        let r = measure(&a, &aa, &a, &ab, 2.0, 42.0, |_| 120.0).unwrap();
+        assert_eq!(r.verdict, Verdict::Drifting, "{r:?}");
+        assert!(r.drift_ms > 25.0, "{r:?}");
     }
     #[test]
     fn outro_intro_overlap_without_coinciding_drums_is_measured_against_the_grid() {
-        let mut a=track(); a.duration=40.0; let mut b=a.clone();
-        let kicks_at=|range:std::ops::Range<usize>,shift:f64|{let times:Vec<_>=range.map(|i|0.25+i as f64*0.5+shift).collect();let (l,r)=crate::testgen::synth_kicks(&times,40.0,16000);Audio{sr:16000,l,r}};
-        let aa=kicks_at(0..24,0.0); let ab=kicks_at(38..79,0.015);
-        let r=measure(&a,&aa,&b,&ab,20.0,40.0,|_|120.0).unwrap();
-        assert!(!r.paired && r.verdict==Verdict::Stable,"{r:?}"); assert!((r.offset_ms-15.0).abs()<2.0,"{r:?}");
-        b.adjust_grid(crate::model::GridScope::All,30.0,r.correction_seconds).unwrap();
-        let after=measure(&a,&aa,&b,&ab,20.0,40.0,|_|120.0).unwrap(); assert!(after.offset_ms.abs()<2.0,"{after:?}");
-        let silent=Audio{sr:16000,l:vec![0.0;640000],r:vec![0.0;640000]};
-        assert!(measure(&a,&aa,&b,&silent,20.0,40.0,|_|120.0).is_err());
+        let mut a = track();
+        a.duration = 40.0;
+        let mut b = a.clone();
+        let kicks_at = |range: std::ops::Range<usize>, shift: f64| {
+            let times: Vec<_> = range.map(|i| 0.25 + i as f64 * 0.5 + shift).collect();
+            let (l, r) = crate::testgen::synth_kicks(&times, 40.0, 16000);
+            Audio { sr: 16000, l, r }
+        };
+        let aa = kicks_at(0..24, 0.0);
+        let ab = kicks_at(38..79, 0.015);
+        let r = measure(&a, &aa, &b, &ab, 20.0, 40.0, |_| 120.0).unwrap();
+        assert!(!r.paired && r.verdict == Verdict::Stable, "{r:?}");
+        assert!((r.offset_ms - 15.0).abs() < 2.0, "{r:?}");
+        b.adjust_grid(crate::model::GridScope::All, 30.0, r.correction_seconds)
+            .unwrap();
+        let after = measure(&a, &aa, &b, &ab, 20.0, 40.0, |_| 120.0).unwrap();
+        assert!(after.offset_ms.abs() < 2.0, "{after:?}");
+        let silent = Audio {
+            sr: 16000,
+            l: vec![0.0; 640000],
+            r: vec![0.0; 640000],
+        };
+        assert!(measure(&a, &aa, &b, &silent, 20.0, 40.0, |_| 120.0).is_err());
     }
     #[test]
     fn grid_relative_fallback_distrusts_a_drifting_reference_grid() {
-        let mut a=track(); a.duration=40.0; let b=a.clone();
-        let synth=|times:Vec<f64>|{let (l,r)=crate::testgen::synth_kicks(&times,40.0,16000);Audio{sr:16000,l,r}};
-        let aa=synth((0..24).map(|i|0.25+i as f64*0.5+i as f64*0.003).collect()); let ab=synth((38..79).map(|i|0.25+i as f64*0.5).collect());
-        let r=measure(&a,&aa,&b,&ab,20.0,40.0,|_|120.0).unwrap();
-        assert!(!r.paired && r.verdict==Verdict::Uncertain,"A drifts 70 ms against its own grid: {r:?}");
+        let mut a = track();
+        a.duration = 40.0;
+        let b = a.clone();
+        let synth = |times: Vec<f64>| {
+            let (l, r) = crate::testgen::synth_kicks(&times, 40.0, 16000);
+            Audio { sr: 16000, l, r }
+        };
+        let aa = synth(
+            (0..24)
+                .map(|i| 0.25 + i as f64 * 0.5 + i as f64 * 0.003)
+                .collect(),
+        );
+        let ab = synth((38..79).map(|i| 0.25 + i as f64 * 0.5).collect());
+        let r = measure(&a, &aa, &b, &ab, 20.0, 40.0, |_| 120.0).unwrap();
+        assert!(
+            !r.paired && r.verdict == Verdict::Uncertain,
+            "A drifts 70 ms against its own grid: {r:?}"
+        );
     }
     #[test]
     fn measured_drift_line_corrects_phase_and_tempo_together() {
-        let a=track();let aa=kicks(0.0,0.0);let ab=kicks(0.012,0.040);
-        let r=measure(&a,&aa,&a,&ab,2.0,42.0,|_|120.0).unwrap(); assert_eq!(r.verdict,Verdict::Drifting,"{r:?}");
-        let (fixed,p)=crate::gridtools::measured(&a,r.line).unwrap(); assert!(p.percent<0.0 && p.percent>-0.5,"{p:?}");
-        let after=measure(&a,&aa,&fixed,&ab,2.0,42.0,|_|120.0).unwrap();
-        assert_eq!(after.verdict,Verdict::Stable,"{after:?}"); assert!(after.offset_ms.abs()<2.0 && after.drift_ms.abs()<3.0,"{after:?}");
+        let a = track();
+        let aa = kicks(0.0, 0.0);
+        let ab = kicks(0.012, 0.040);
+        let r = measure(&a, &aa, &a, &ab, 2.0, 42.0, |_| 120.0).unwrap();
+        assert_eq!(r.verdict, Verdict::Drifting, "{r:?}");
+        let (fixed, p) = crate::gridtools::measured(&a, r.line).unwrap();
+        assert!(p.percent < 0.0 && p.percent > -0.5, "{p:?}");
+        let after = measure(&a, &aa, &fixed, &ab, 2.0, 42.0, |_| 120.0).unwrap();
+        assert_eq!(after.verdict, Verdict::Stable, "{after:?}");
+        assert!(
+            after.offset_ms.abs() < 2.0 && after.drift_ms.abs() < 3.0,
+            "{after:?}"
+        );
     }
     #[test]
     fn silence_sustained_bass_and_short_overlaps_do_not_produce_a_correction() {
-        let a=track();let aa=kicks(0.0,0.0);let silence=Audio{sr:16000,l:vec![0.0;16000*24],r:vec![0.0;16000*24]};
-        assert!(measure(&a,&aa,&a,&silence,2.0,42.0,|_|120.0).is_err());
-        let sine:Vec<_>=(0..16000*24).map(|i|0.5*(i as f32*2.0*std::f32::consts::PI*60.0/16000.0).sin()).collect();
-        let tone=Audio{sr:16000,l:sine.clone(),r:sine};assert!(measure(&a,&aa,&a,&tone,2.0,42.0,|_|120.0).is_err());
-        assert!(measure(&a,&aa,&a,&aa,2.0,5.0,|_|120.0).is_err());
+        let a = track();
+        let aa = kicks(0.0, 0.0);
+        let silence = Audio {
+            sr: 16000,
+            l: vec![0.0; 16000 * 24],
+            r: vec![0.0; 16000 * 24],
+        };
+        assert!(measure(&a, &aa, &a, &silence, 2.0, 42.0, |_| 120.0).is_err());
+        let sine: Vec<_> = (0..16000 * 24)
+            .map(|i| 0.5 * (i as f32 * 2.0 * std::f32::consts::PI * 60.0 / 16000.0).sin())
+            .collect();
+        let tone = Audio {
+            sr: 16000,
+            l: sine.clone(),
+            r: sine,
+        };
+        assert!(measure(&a, &aa, &a, &tone, 2.0, 42.0, |_| 120.0).is_err());
+        assert!(measure(&a, &aa, &a, &aa, 2.0, 5.0, |_| 120.0).is_err());
     }
     #[test]
     fn repeated_disagreement_cannot_hide_behind_zero_median_scatter() {
-        let a=track(); let aa=kicks(0.0,0.0);
-        let times:Vec<_>=(0..46).map(|i|0.25+i as f64*0.5+if i%3==0{-0.040}else{0.018}).collect();
-        let (l,r)=crate::testgen::synth_kicks(&times,24.0,16000); let ab=Audio{sr:16000,l,r};
-        let report=measure(&a,&aa,&a,&ab,2.0,42.0,|_|120.0).unwrap();
-        assert_eq!(report.verdict,Verdict::Uncertain,"{report:?}");
+        let a = track();
+        let aa = kicks(0.0, 0.0);
+        let times: Vec<_> = (0..46)
+            .map(|i| 0.25 + i as f64 * 0.5 + if i % 3 == 0 { -0.040 } else { 0.018 })
+            .collect();
+        let (l, r) = crate::testgen::synth_kicks(&times, 24.0, 16000);
+        let ab = Audio { sr: 16000, l, r };
+        let report = measure(&a, &aa, &a, &ab, 2.0, 42.0, |_| 120.0).unwrap();
+        assert_eq!(report.verdict, Verdict::Uncertain, "{report:?}");
     }
     #[test]
     fn scattered_offbeat_attacks_stay_advisory() {
-        let a=track();let aa=kicks(0.0,0.0);let times:Vec<_>=(0..46).map(|i|0.25+i as f64*0.5+if i%3==0{0.05}else if i%3==1{-0.04}else{0.0}).collect();
-        let(l,r)=crate::testgen::synth_kicks(&times,24.0,16000);let b=Audio{sr:16000,l,r};
-        let r=measure(&a,&aa,&a,&b,2.0,42.0,|_|120.0).unwrap();assert_eq!(r.verdict,Verdict::Uncertain,"{r:?}");
+        let a = track();
+        let aa = kicks(0.0, 0.0);
+        let times: Vec<_> = (0..46)
+            .map(|i| {
+                0.25 + i as f64 * 0.5
+                    + if i % 3 == 0 {
+                        0.05
+                    } else if i % 3 == 1 {
+                        -0.04
+                    } else {
+                        0.0
+                    }
+            })
+            .collect();
+        let (l, r) = crate::testgen::synth_kicks(&times, 24.0, 16000);
+        let b = Audio { sr: 16000, l, r };
+        let r = measure(&a, &aa, &a, &b, 2.0, 42.0, |_| 120.0).unwrap();
+        assert_eq!(r.verdict, Verdict::Uncertain, "{r:?}");
     }
 }
