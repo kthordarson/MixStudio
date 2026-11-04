@@ -3374,7 +3374,10 @@ impl App {
                     {
                         continue;
                     }
-                    let preset = self.mix.tracks[o.3].trans.preset;
+                    let tr = &self.mix.tracks[o.3].trans;
+                    let preset = tr.preset;
+                    // Same rule as the engine: an edited Volume automation curve replaces the preset gain.
+                    let custom = if o.2 { &tr.curve_out } else { &tr.curve_in };
                     let (x0, x1) = (bx(o.0).max(vis.left()), bx(o.1).min(vis.right()));
                     if x1 > x0 + 1.0 {
                         let n = ((x1 - x0) / 2.0).ceil() as usize;
@@ -3382,7 +3385,11 @@ impl App {
                             .map(|k| {
                                 let x = x0 + (x1 - x0) * k as f32 / n as f32;
                                 let pr = ((xb(x) - o.0) / (o.1 - o.0)) as f32;
-                                let g = engine::preset_gain(preset, pr, o.2);
+                                let g = if custom.is_empty() {
+                                    engine::preset_gain(preset, pr, o.2)
+                                } else {
+                                    crate::model::interp32(custom, pr)
+                                };
                                 pos2(x, wave.bottom() - 2.0 - g * (wave.height() - 4.0))
                             })
                             .collect();
