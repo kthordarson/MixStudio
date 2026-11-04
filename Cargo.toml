@@ -35,3 +35,16 @@ debug = "line-tables-only"
 
 [profile.dev]
 opt-level = 2
+
+[profile.re]            # cargo build --profile re
+inherits = "release"
+opt-level = 1           # 0 is the most source-like; 1 still reads well
+debug = "full"          # full types, not just line tables
+strip = "none"
+split-debuginfo = "off" # or "packed"; on MSVC you always get a .pdb
+lto = false             # LTO inlines and merges across crates
+codegen-units = 256     # more units means less inlining between them
+panic = "abort"         # removes landing pads, so the control flow is much cleaner
+overflow-checks = false # removes the add-overflow panic branches
+debug-assertions = false
+incremental = false
