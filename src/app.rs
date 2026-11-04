@@ -2259,12 +2259,20 @@ impl eframe::App for App {
                 .resizable(true)
                 .default_height((screen * 0.45).max(360.0))
                 .height_range(210.0..=screen * 0.8)
+        } else if let Some((id, h)) = match self.tab {
+            // Workbench tabs: drag the panel's top edge; each tab keeps its own height.
+            Tab::Transition => Some(("bottom_transition", 232.0)),
+            Tab::Track => Some(("bottom_track", 232.0)),
+            Tab::Grid => Some(("bottom_grid", 232.0)),
+            Tab::Compare => Some(("bottom_compare", 380.0)),
+            _ => None,
+        } {
+            egui::TopBottomPanel::bottom(id)
+                .resizable(true)
+                .default_height(h)
+                .height_range(120.0..=screen * 0.85)
         } else {
-            egui::TopBottomPanel::bottom("bottom").exact_height(if self.tab == Tab::Compare {
-                380.0
-            } else {
-                232.0
-            })
+            egui::TopBottomPanel::bottom("bottom").exact_height(232.0)
         };
         bottom_panel
             .frame(
