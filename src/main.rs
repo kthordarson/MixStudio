@@ -5,6 +5,7 @@ mod audio;
 mod automix;
 mod beatcheck;
 mod beatmap;
+mod crashlog;
 mod dialogs;
 mod engine;
 mod export;
@@ -494,6 +495,7 @@ fn stem_tests() -> bool {
 }
 
 fn main() {
+    crashlog::install();
     if std::env::args().nth(1).as_deref() == Some("--dialog-check") {
         for (n, r) in dialogs::backends() {
             println!(
