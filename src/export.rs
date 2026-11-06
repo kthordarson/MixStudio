@@ -24,7 +24,7 @@ impl TemporaryWav {
     fn new() -> std::io::Result<Self> {
         let dir =
             std::env::temp_dir().join(format!("mixstudio-export-{}", crate::recovery::unique_id()));
-        let builder = std::fs::DirBuilder::new();
+        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
