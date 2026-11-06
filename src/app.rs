@@ -4324,7 +4324,9 @@ impl App {
                         avg
                     }
                 };
-                let cy = |v: f64| y_of(v).clamp(trow.top() + 14.0, trow.bottom() - 1.0);
+                // Lane can be resized down to 14px, so keep lo <= hi or clamp panics.
+                let cy_lo = (trow.top() + 14.0).min(trow.bottom() - 1.0);
+                let cy = |v: f64| y_of(v).clamp(cy_lo, trow.bottom() - 1.0);
                 if g.dynamic() {
                     let mut v = vec![];
                     let mut x = xa;
