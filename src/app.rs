@@ -1561,7 +1561,7 @@ impl App {
     }
     fn trans_curves_ui(&mut self, ui: &mut egui::Ui, i: usize) {
         ui.separator();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("Volume automation").strong());
             ui.radio_value(&mut self.tc_side, 0, "Outgoing");
             ui.radio_value(&mut self.tc_side, 1, "Incoming");
