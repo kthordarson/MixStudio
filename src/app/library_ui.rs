@@ -581,7 +581,7 @@ impl App {
                     .prefix("±")
                     .suffix(" %"),
             );
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             ui.label(egui::RichText::new("Sort").color(theme::dim()));
             egui::ComboBox::from_id_salt("library_sort")
                 .width(96.0)
@@ -667,15 +667,7 @@ impl App {
                         .color(theme::dim()),
                 );
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "▶ previews · drag rows onto a deck · Ctrl/Shift selects · Enter adds",
-                    )
-                    .size(11.0)
-                    .color(theme::dim()),
-                )
-            });
+            // ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.label(egui::RichText::new("▶ previews · drag rows onto a deck · Ctrl/Shift selects · Enter adds",).size(11.0).color(theme::dim()),) });
         });
         ui.add_space(2.0);
         if self.lib_view.is_empty() {
@@ -747,7 +739,7 @@ impl App {
                             .add(
                                 egui::Button::new(
                                     egui::RichText::new(format!("{name}{arrow}"))
-                                        .size(11.5)
+                                        .size(5.5)
                                         .strong()
                                         .color(if on { theme::accent() } else { theme::dim() }),
                                 )
@@ -784,7 +776,7 @@ impl App {
                         let on = self.listening(&e.path);
                         let button = egui::Button::new(
                             egui::RichText::new(if on { "⏹" } else { "▶" })
-                                .size(12.0)
+                                .size(5.0)
                                 .color(if on { theme::bg() } else { theme::txt() }),
                         )
                         .fill(if on {
@@ -810,28 +802,15 @@ impl App {
                         ui.add_space(4.0);
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(e.filename())
-                                        .strong()
-                                        .size(13.5)
-                                        .color(color),
-                                )
-                                .truncate(),
-                            );
-                            let metadata = if e.artist.is_empty() {
+                            ui.add(egui::Label::new(egui::RichText::new(e.filename()).strong().size(11.5).color(color),).truncate(),);
+                            let _metadata = if e.artist.is_empty() {
                                 e.title.clone()
                             } else if e.title.is_empty() {
                                 e.artist.clone()
                             } else {
                                 format!("{} · {}", e.artist, e.title)
                             };
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(metadata).size(11.5).color(theme::dim()),
-                                )
-                                .truncate(),
-                            );
+                            // ui.add(egui::Label::new(egui::RichText::new(metadata).size(11.5).color(theme::dim()),).truncate(),);
                         });
                     });
                     row.col(|ui| {

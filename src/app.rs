@@ -235,6 +235,8 @@ pub struct App {
     vzoom: bool,
     /// User-dragged heights for deck 1, deck 2, samples 1-2 and the tempo lane; `None` = automatic.
     lane_h: [Option<f32>; 5],
+    /// The bottom-panel tab whose panel is collapsed (clicking the active tab again); timeline gets the full height.
+    bottom_min: Option<Tab>,
     tc_side: usize,
     tc_drag: Option<usize>,
     fx_sel: Option<usize>,
@@ -560,6 +562,7 @@ impl App {
             auto_rect: Rect::NOTHING,
             vzoom: false,
             lane_h: [None; 5],
+            bottom_min: None,
             tc_side: 0,
             tc_drag: None,
             fx_sel: None,
@@ -2274,13 +2277,16 @@ impl eframe::App for App {
         } else {
             egui::TopBottomPanel::bottom("bottom").exact_height(232.0)
         };
-        bottom_panel
-            .frame(
-                egui::Frame::none()
-                    .fill(C::from_rgb(28, 29, 33))
-                    .inner_margin(10.0),
-            )
-            .show(ctx, |ui| self.bottom(ui));
+        // Clicking the active tab again collapses the panel; switching tabs (anywhere) brings it back.
+        if self.bottom_min != Some(self.tab) {
+            bottom_panel
+                .frame(
+                    egui::Frame::none()
+                        .fill(C::from_rgb(28, 29, 33))
+                        .inner_margin(10.0),
+                )
+                .show(ctx, |ui| self.bottom(ui));
+        }
         self.transport(ctx);
         egui::SidePanel::right("master")
             .exact_width(42.0)
@@ -2450,8 +2456,24 @@ impl App {
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         for (t, n) in tabs {
-                                            if seg_button(ui, n, self.tab == t).clicked() {
-                                                self.tab = t;
+                                            let active = self.tab == t;
+                                            let r = seg_button(ui, n, active);
+                                            let r = if active {
+                                                r.on_hover_text(if self.bottom_min == Some(t) {
+                                                    "Click to show the panel again"
+                                                } else {
+                                                    "Click again to collapse the panel and show the full decks and timeline"
+                                                })
+                                            } else {
+                                                r
+                                            };
+                                            if r.clicked() {
+                                                if active {
+                                                    self.bottom_min = if self.bottom_min == Some(t) { None } else { Some(t) };
+                                                } else {
+                                                    self.tab = t;
+                                                    self.bottom_min = None;
+                                                }
                                             }
                                         }
                                     });
@@ -2832,10 +2854,32 @@ impl App {
         let mut y = ruler.bottom();
         let mut rows = vec![];
         let vz = if self.vzoom { 1.8 } else { 1.0 };
-        let deck_h = ((area.bottom() - y - 2.0 * SAMPLE_H - TEMPO_H) / 2.0).clamp(96.0, 230.0);
+        let others: f32 = [SAMPLE_H, SAMPLE_H, TEMPO_H]
+            .iter()
+            .enumerate()
+            .map(|(k, d)| self.lane_h[k + 2].unwrap_or(*d))
+            .sum();
+        let deck_h = ((area.bottom() - y - others) / 2.0).clamp(96.0, 230.0);
         let auto_h = [deck_h, deck_h, SAMPLE_H, SAMPLE_H, TEMPO_H];
+        const LANE_MIN: [f32; 5] = [96.0, 96.0, 24.0, 24.0, 14.0];
+        let mut hs: [f32; 5] = std::array::from_fn(|l| {
+            self.lane_h[l].unwrap_or(auto_h[l]) * if l < 2 { vz } else { 1.0 }
+        });
+        // Keep every lane (the tempo lane last) inside the timeline: when the stack is taller than the
+        // area (window or bottom panel resized), shrink the decks first, then the sample lanes, then tempo.
+        if !self.vzoom {
+            let mut over = hs.iter().sum::<f32>() - (area.bottom() - y);
+            for l in [0, 1, 2, 3, 4] {
+                if over <= 0.0 {
+                    break;
+                }
+                let cut = (hs[l] - LANE_MIN[l]).max(0.0).min(over);
+                hs[l] -= cut;
+                over -= cut;
+            }
+        }
         for lane in 0..5 {
-            let h = self.lane_h[lane].unwrap_or(auto_h[lane]) * if lane < 2 { vz } else { 1.0 };
+            let h = hs[lane];
             rows.push((
                 lane,
                 Rect::from_min_max(pos2(area.left(), y), pos2(area.right(), y + h)),
@@ -5464,15 +5508,28 @@ impl App {
             if resp.double_clicked() {
                 self.lane_h[lane] = None;
             } else if resp.dragged() {
-                let (min, scale) = if lane < 2 {
-                    (96.0, vz)
-                } else if lane < 4 {
-                    (24.0, 1.0)
-                } else {
-                    (14.0, 1.0)
-                };
-                let cur = self.lane_h[lane].unwrap_or(auto_h[lane]);
-                self.lane_h[lane] = Some((cur + resp.drag_delta().y / scale).clamp(min, 800.0));
+                // Work in drawn pixels. Growing uses the free space below the last lane first, then takes
+                // height from the other lanes (down to their minimums), so the stack never leaves the timeline.
+                let scale = |l: usize| if l < 2 { vz } else { 1.0 };
+                let mut new: [f32; 5] = std::array::from_fn(|l| rows[l].1.height());
+                let mut d = resp.drag_delta().y;
+                if d > 0.0 {
+                    let mut need = d - (area.bottom() - y).max(0.0);
+                    for o in (0..5).filter(|&o| o != lane) {
+                        if need <= 0.0 {
+                            break;
+                        }
+                        let cut = (new[o] - LANE_MIN[o] * scale(o)).max(0.0).min(need);
+                        if cut > 0.0 {
+                            new[o] -= cut;
+                            need -= cut;
+                            self.lane_h[o] = Some(new[o] / scale(o));
+                        }
+                    }
+                    d -= need.max(0.0);
+                }
+                let h = (new[lane] + d).max(LANE_MIN[lane] * scale(lane));
+                self.lane_h[lane] = Some(h / scale(lane));
             }
         }
         if y < area.bottom() {
