@@ -2609,7 +2609,9 @@ impl App {
         );
     }
 
-    fn knob(ui: &mut egui::Ui, id: egui::Id, c: egui::Pos2, v: &mut f32, label: &str) {
+    /// `auto`: automation value at the playhead; the knob then shows the effective value (knob + automation,
+    /// as the engine plays it) in the automation colour, while dragging still edits the knob's own value.
+    fn knob(ui: &mut egui::Ui, id: egui::Id, c: egui::Pos2, v: &mut f32, auto: Option<f32>, label: &str) {
         let resp = ui.interact(
             Rect::from_center_size(c, vec2(22.0, 22.0)),
             id,
@@ -2623,10 +2625,23 @@ impl App {
         }
         let p = ui.painter();
         p.circle_filled(c, 11.0, C::from_rgb(58, 60, 66));
-        p.circle_stroke(c, 11.0, Stroke::new(1.0_f32, C::from_rgb(90, 92, 98)));
-        if v.abs() > 0.005 {
+        let auto_col = C::from_rgb(255, 120, 60);
+        let shown = match auto {
+            Some(a) => (*v + a).clamp(-1.0, 1.0),
+            None => *v,
+        };
+        p.circle_stroke(
+            c,
+            11.0,
+            if auto.is_some() {
+                Stroke::new(1.0_f32, auto_col)
+            } else {
+                Stroke::new(1.0_f32, C::from_rgb(90, 92, 98))
+            },
+        );
+        if shown.abs() > 0.005 {
             let a0 = -std::f32::consts::FRAC_PI_2;
-            let a1 = a0 + *v * 2.4;
+            let a1 = a0 + shown * 2.4;
             let pts: Vec<egui::Pos2> = (0..=12)
                 .map(|k| {
                     let a = a0 + (a1 - a0) * k as f32 / 12.0;
@@ -2635,14 +2650,11 @@ impl App {
                 .collect();
             p.add(egui::Shape::line(
                 pts,
-                Stroke::new(2.0_f32, theme::accent()),
+                Stroke::new(2.0_f32, if auto.is_some() { auto_col } else { theme::accent() }),
             ));
         }
-        let txt = if label == "Filter" {
-            format!("{:.0}", *v * 100.0)
-        } else {
-            format!("{:.1}", *v * 12.0)
-        };
+        let fmt = |x: f32| if label == "Filter" { format!("{:.0}", x * 100.0) } else { format!("{:.1}", x * 12.0) };
+        let txt = fmt(shown);
         p.text(
             c,
             Align2::CENTER_CENTER,
@@ -2657,7 +2669,15 @@ impl App {
             FontId::proportional(10.0),
             theme::dim(),
         );
-        resp.on_hover_text(format!("{label}: drag up/down, double-click = reset"));
+        resp.on_hover_text(match auto {
+            Some(a) => format!(
+                "{label}: {} (knob {} + automation {}). Drag up/down to change the knob, double-click = reset",
+                fmt(shown),
+                fmt(*v),
+                fmt(a)
+            ),
+            None => format!("{label}: drag up/down, double-click = reset"),
+        });
     }
 
     /// Show automation on `ti` (or hide it); a clip in plain stem view switches to stem-volume automation.
@@ -5374,14 +5394,19 @@ impl App {
             if deck {
                 let ky = h.top() + 44.0;
                 let mut x = h.left() + 16.0;
+                // Automation of the clip under the playhead (the engine adds it to the knob value).
+                let playing_clip = self.mix.tracks.iter().find(|t| {
+                    t.lane == lane && (t.vis_start(bpm)..t.end(bpm)).contains(&beat_now)
+                });
                 for (k, lab) in ["High", "Mid", "Low", "Filter"].iter().enumerate() {
-                    let v = match k {
-                        0 => &mut d.hi,
-                        1 => &mut d.mid,
-                        2 => &mut d.low,
-                        _ => &mut d.filter,
+                    let (v, ak) = match k {
+                        0 => (&mut d.hi, 3),
+                        1 => (&mut d.mid, 2),
+                        2 => (&mut d.low, 1),
+                        _ => (&mut d.filter, 4),
                     };
-                    Self::knob(ui, ui.id().with(("knob", lane, k)), pos2(x, ky), v, lab);
+                    let auto = playing_clip.and_then(|t| t.auto_at(ak, beat_now));
+                    Self::knob(ui, ui.id().with(("knob", lane, k)), pos2(x, ky), v, auto, lab);
                     x += 26.0;
                 }
                 // A: automation for this deck's clip (under the playhead, else nearest the view centre).
