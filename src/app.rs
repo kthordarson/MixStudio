@@ -1495,32 +1495,55 @@ impl App {
         use crate::fx::*;
         let dim = |s: &str| egui::RichText::new(s).color(theme::dim()).size(11.0);
         let targets = ["Deck 1", "Deck 2", "Sample 1", "Sample 2", "Master"];
+        let h = ui.available_height();
         ui.horizontal_top(|ui| {
+            // Column 1: add new blocks + presets
             ui.vertical(|ui| {
+                ui.set_max_width(300.0);
+                ui.set_min_width(300.0);
                 ui.label(egui::RichText::new("Effect blocks").strong());
                 ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("fxk").selected_text(self.fx_kind.name()).show_ui(ui, |ui| { for k in FxKind::ALL { ui.selectable_value(&mut self.fx_kind, k, k.name()); } });
-                    egui::ComboBox::from_id_salt("fxt").selected_text(targets[self.fx_target]).show_ui(ui, |ui| { for (i, n) in targets.iter().enumerate() { ui.selectable_value(&mut self.fx_target, i, *n); } });
-                    if ui.button("+ Add at playhead").clicked() { self.snapshot(); let b = self.beat().round(); self.mix.fx.push(FxBlock::new(self.fx_kind, self.fx_target, b)); self.fx_sel = Some(self.mix.fx.len() - 1); }
+                    egui::ComboBox::from_id_salt("fxk").width(110.0).selected_text(self.fx_kind.name()).show_ui(ui, |ui| { for k in FxKind::ALL { ui.selectable_value(&mut self.fx_kind, k, k.name()); } });
+                    egui::ComboBox::from_id_salt("fxt").width(90.0).selected_text(targets[self.fx_target]).show_ui(ui, |ui| { for (i, n) in targets.iter().enumerate() { ui.selectable_value(&mut self.fx_target, i, *n); } });
                 });
+                if ui.button("+ Add at playhead").clicked() { self.snapshot(); let b = self.beat().round(); self.mix.fx.push(FxBlock::new(self.fx_kind, self.fx_target, b)); self.fx_sel = Some(self.mix.fx.len() - 1); }
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Presets").strong());
+                if self.fx_presets.is_empty() { ui.label(dim("No presets yet: select a block and save it.")); }
+                let mut rm = None; let mut add = None;
+                egui::ScrollArea::vertical().id_salt("fx_presets").max_height((h - 90.0).max(40.0)).show(ui, |ui| {
+                    for (i, p) in self.fx_presets.iter().enumerate() { ui.horizontal(|ui| { ui.label(format!("{} ({})", p.name, p.block.kind.name()));
+                        if ui.small_button("Add at playhead").clicked() { add = Some(i); } if ui.small_button("✖").clicked() { rm = Some(i); } }); }
+                });
+                if let Some(i) = add { self.snapshot(); let mut b = self.fx_presets[i].block.clone(); b.renew_id(); b.start = self.beat().round(); self.mix.fx.push(b); self.fx_sel = Some(self.mix.fx.len() - 1); }
+                if let Some(i) = rm { self.fx_presets.remove(i); let _ = save_presets(&self.fx_presets); }
+            });
+            ui.separator();
+            // Column 2: selected block parameters
+            ui.vertical(|ui| {
+                ui.set_max_width(420.0);
+                ui.set_min_width(420.0);
                 let mut del = false; let mut save = false;
                 if let Some(k) = self.fx_sel.filter(|&k| k < self.mix.fx.len()) {
                     let before = self.mix.fx[k].clone();
                     let mut open_ed = false;
                     let f = &mut self.mix.fx[k];
-                    ui.label(format!("Selected: {} on {}, bar {:.0}", f.kind.name(), targets[f.target.min(4)], f.start / 4.0 + 1.0));
-                    egui::Grid::new("fxp").num_columns(2).show(ui, |ui| {
-                        ui.label("Target"); egui::ComboBox::from_id_salt("fxst").selected_text(targets[f.target.min(4)]).show_ui(ui, |ui| { for (i, n) in targets.iter().enumerate() { ui.add_enabled_ui(f.kind!=FxKind::Scratch || i<4,|ui|{ui.selectable_value(&mut f.target,i,*n);}); } }); ui.end_row();
-                        ui.label("Length"); ui.add(egui::DragValue::new(&mut f.len).range(0.5..=256.0).speed(0.25).suffix(" beats")); ui.end_row();
-                        if f.kind.has_tail() { ui.label("Tail"); ui.add(egui::DragValue::new(&mut f.tail).range(0.0..=64.0).speed(0.25).suffix(" beats")); ui.end_row(); }
+                    ui.label(egui::RichText::new(format!("Selected: {} on {}, bar {:.0}", f.kind.name(), targets[f.target.min(4)], f.start / 4.0 + 1.0)).strong());
+                    egui::Grid::new("fxp").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+                        ui.label("Target"); egui::ComboBox::from_id_salt("fxst").width(90.0).selected_text(targets[f.target.min(4)]).show_ui(ui, |ui| { for (i, n) in targets.iter().enumerate() { ui.add_enabled_ui(f.kind!=FxKind::Scratch || i<4,|ui|{ui.selectable_value(&mut f.target,i,*n);}); } });
                         ui.label("Mix"); ui.add(egui::Slider::new(&mut f.mix, 0.0..=1.0)); ui.end_row();
-                        if matches!(f.kind, FxKind::Reverb | FxKind::Echo) { ui.label(if f.kind == FxKind::Reverb { "Decay" } else { "Feedback" }); ui.add(egui::Slider::new(&mut f.decay, 0.0..=1.0)); ui.end_row(); }
-                        if matches!(f.kind, FxKind::Flanger | FxKind::FilterSweep) { ui.label("Depth"); ui.add(egui::Slider::new(&mut f.depth, 0.0..=1.0)); ui.end_row(); }
-                        if matches!(f.kind, FxKind::Echo | FxKind::Flanger) { ui.label("Time"); ui.add(egui::Slider::new(&mut f.time, 0.125..=8.0).logarithmic(true).suffix(" beats")); ui.end_row(); }
+                        ui.label("Length"); ui.add(egui::DragValue::new(&mut f.len).range(0.5..=256.0).speed(0.25).suffix(" beats"));
+                        if matches!(f.kind, FxKind::Reverb | FxKind::Echo) { ui.label(if f.kind == FxKind::Reverb { "Decay" } else { "Feedback" }); ui.add(egui::Slider::new(&mut f.decay, 0.0..=1.0)); }
+                        else if matches!(f.kind, FxKind::Flanger | FxKind::FilterSweep) { ui.label("Depth"); ui.add(egui::Slider::new(&mut f.depth, 0.0..=1.0)); }
+                        ui.end_row();
+                        if f.kind.has_tail() { ui.label("Tail"); ui.add(egui::DragValue::new(&mut f.tail).range(0.0..=64.0).speed(0.25).suffix(" beats")); } else { ui.label(""); ui.label(""); }
+                        if matches!(f.kind, FxKind::Echo | FxKind::Flanger) { ui.label("Time"); ui.add(egui::Slider::new(&mut f.time, 0.125..=8.0).logarithmic(true).suffix(" beats")); }
+                        ui.end_row();
                         if f.kind == FxKind::Scratch { ui.label("Pattern"); ui.horizontal(|ui| { ui.monospace(&f.pattern); if ui.button("✏ Pattern editor…").clicked() { open_ed = true; } }); ui.end_row(); }
                     });
                     if open_ed { self.scratch_win = true; }
                     if self.mix.fx[k] != before { let now = self.mix.fx[k].clone(); self.mix.fx[k] = before; self.snapshot(); self.mix.fx[k] = now; }
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| { if ui.button("🗑 Delete block").clicked() { del = true; }
                         ui.add(egui::TextEdit::singleline(&mut self.fx_name).hint_text("preset name").desired_width(120.0));
                         if ui.add_enabled(!self.fx_name.trim().is_empty(), egui::Button::new("Save as preset")).clicked() { save = true; } });
@@ -1528,21 +1551,20 @@ impl App {
                     else if save { let name = self.fx_name.trim().to_string(); let mut b = self.mix.fx[k].clone(); b.start = 0.0;
                         self.fx_presets.retain(|p| p.name != name); self.fx_presets.push(FxPreset { name: name.clone(), block: b });
                         self.status = match save_presets(&self.fx_presets) { Ok(()) => format!("Preset \"{name}\" saved"), Err(e) => format!("Could not save presets: {e}") }; self.fx_name.clear(); }
-                } else { ui.label(dim("Click a block on the timeline to edit it.")); }
-                ui.separator();
-                ui.label(egui::RichText::new("Presets").strong());
-                if self.fx_presets.is_empty() { ui.label(dim("No presets yet: select a block and save it.")); }
-                let mut rm = None; let mut add = None;
-                for (i, p) in self.fx_presets.iter().enumerate() { ui.horizontal(|ui| { ui.label(format!("{} ({})", p.name, p.block.kind.name()));
-                    if ui.small_button("Add at playhead").clicked() { add = Some(i); } if ui.small_button("✖").clicked() { rm = Some(i); } }); }
-                if let Some(i) = add { self.snapshot(); let mut b = self.fx_presets[i].block.clone(); b.renew_id(); b.start = self.beat().round(); self.mix.fx.push(b); self.fx_sel = Some(self.mix.fx.len() - 1); }
-                if let Some(i) = rm { self.fx_presets.remove(i); let _ = save_presets(&self.fx_presets); }
+                } else {
+                    ui.label(egui::RichText::new("Selected block").strong());
+                    ui.label(dim("Click a block on the timeline to edit it."));
+                }
+                ui.add_space(8.0);
+                ui.label(dim("Per deck: 3-band EQ and filter on the left; automation with the A button on a clip."));
             });
             ui.separator();
+            // Column 3: live XY pad
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new("XY pad (live)").strong());
                 ui.label(dim("Hold and move while the mix plays: X = mix, Y = decay / depth. Release, then commit."));
-                let (r, resp) = ui.allocate_exact_size(vec2(220.0, 150.0), Sense::click_and_drag());
+                let side = (h - 70.0).clamp(90.0, 170.0);
+                let (r, resp) = ui.allocate_exact_size(vec2(side * 1.5, side), Sense::click_and_drag());
                 let p = ui.painter(); p.rect_filled(r, 6.0, C::from_rgb(30, 31, 36)); p.rect_stroke(r, 6.0, Stroke::new(1.0_f32, theme::line()));
                 for k in 1..4 { let x = r.left() + r.width() * k as f32 / 4.0; let y = r.top() + r.height() * k as f32 / 4.0;
                     p.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], Stroke::new(0.5_f32, theme::line())); p.line_segment([pos2(r.left(), y), pos2(r.right(), y)], Stroke::new(0.5_f32, theme::line())); }
@@ -1554,13 +1576,13 @@ impl App {
                     p.circle_filled(pp, 9.0, theme::accent()); self.live_fx = Some(b);
                 } else if let Some(b) = self.live_fx.take() { self.live_last = Some((self.live_start, self.beat(), b)); }
                 if let Some((s, e, b)) = self.live_last.clone() {
-                    ui.label(format!("Last: {} from bar {:.1} to {:.1}, mix {:.2}, {:.2}", b.kind.name(), s / 4.0 + 1.0, e / 4.0 + 1.0, b.mix, b.decay));
-                    if ui.button("Commit to a block").clicked() { self.snapshot(); let mut nb = b.clone(); nb.renew_id(); nb.start = s.round(); nb.len = (e - s).round().max(1.0); nb.target = if nb.kind==FxKind::Scratch {self.fx_target.min(3)} else {self.fx_target};
-                        if nb.kind == FxKind::FilterSweep { nb.depth = nb.time.max(0.1); nb.time = 1.0; }
-                        self.mix.fx.push(nb); self.fx_sel = Some(self.mix.fx.len() - 1); self.live_last = None; self.status = "Live effect committed to a block".into(); }
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Last: {} from bar {:.1} to {:.1}, mix {:.2}, {:.2}", b.kind.name(), s / 4.0 + 1.0, e / 4.0 + 1.0, b.mix, b.decay));
+                        if ui.button("Commit to a block").clicked() { self.snapshot(); let mut nb = b.clone(); nb.renew_id(); nb.start = s.round(); nb.len = (e - s).round().max(1.0); nb.target = if nb.kind==FxKind::Scratch {self.fx_target.min(3)} else {self.fx_target};
+                            if nb.kind == FxKind::FilterSweep { nb.depth = nb.time.max(0.1); nb.time = 1.0; }
+                            self.mix.fx.push(nb); self.fx_sel = Some(self.mix.fx.len() - 1); self.live_last = None; self.status = "Live effect committed to a block".into(); }
+                    });
                 }
-                ui.add_space(8.0);
-                ui.label(dim("Per deck: 3-band EQ and filter on the left; automation with the A button on a clip."));
             });
         });
     }
