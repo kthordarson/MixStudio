@@ -12,6 +12,8 @@ pub(super) struct Comparison {
     pub anchors: [Option<Anchor>; 2],
     pub slot: usize,
     pub target: f64,
+    /// Clicking an attack assigns it to the nearest mix beat instead of the typed target.
+    pub snap: bool,
     pub proposed: bool,
     pub audition: u8,
     pub metro: bool,
@@ -29,6 +31,7 @@ impl Default for Comparison {
             anchors: [None, None],
             slot: 0,
             target: 0.0,
+            snap: true,
             proposed: true,
             audition: 0,
             metro: false,
@@ -271,6 +274,7 @@ impl App {
                 self.mix.tracks[i] = track;
                 self.beat_check = None;
                 self.comparison.anchors = [None, None];
+                self.comparison.slot = 0;
                 self.comparison.stamp = self.alignment_stamp(i).unwrap_or_default();
                 self.status = format!(
                     "Two-anchor correction: {:.3} BPM ({:+.3}%). Undo: Ctrl+Z.",
@@ -316,9 +320,10 @@ impl App {
                 ui.label("Target mix beat:"); let mut number=self.comparison.target+1.0;
                 if ui.add(egui::DragValue::new(&mut number).range(s.ceil()+1.0..=e.floor()+1.0).speed(1.0).fixed_decimals(0)).changed(){self.comparison.target=number.round()-1.0;}
                 if ui.button("Target at playhead").clicked(){self.comparison.target=self.beat().round().clamp(s.ceil(),e.floor());}
-                if ui.button("Clear anchors").clicked(){self.comparison.anchors=[None,None];}
+                ui.checkbox(&mut self.comparison.snap,"Snap to nearest beat").on_hover_text("On: a clicked attack is assigned to the mix beat nearest the click. Off: it is assigned to the target beat typed here.");
+                if ui.button("Clear anchors").clicked(){self.comparison.anchors=[None,None];self.comparison.slot=0;self.comparison.target=((s+e)*0.5).round().clamp(s.ceil(),e.floor());}
             });
-            ui.label(egui::RichText::new("Choose a target beat, then click its incoming attack below. Set A near the start and B later (at least 4 beats apart). Yellow areas need manual checking.").color(theme::dim()).size(11.0));
+            ui.label(egui::RichText::new(if self.comparison.snap {"Click a kick in the B row to anchor it to the nearest beat line, then click another kick at least 4 beats later (16 or more is best). Yellow areas need manual checking."} else {"Choose a target beat, then click its incoming attack below. Set A near the start and B later (at least 4 beats apart). Yellow areas need manual checking."}).color(theme::dim()).size(11.0));
             let evidence=self.beat_check.as_ref().filter(|c|c.incoming==i && self.alignment_stamp(i).as_ref()==Some(&c.stamp)).map(|c|c.evidence.clone()).unwrap_or_default();
             let (rect,_)=ui.allocate_exact_size(vec2(ui.available_width().max(100.0),152.0),Sense::hover());
             let label_width=120.0; let wave=Rect::from_min_max(pos2(rect.left()+label_width,rect.top()),rect.max);
@@ -352,6 +357,7 @@ impl App {
                     let response=ui.interact(r,ui.id().with("incoming_anchor_wave"),Sense::click());
                     if editable && response.clicked() { if let Some(p)=response.interact_pointer_pos() {
                         let beat=from+(p.x-r.left()) as f64/r.width() as f64*(to-from);
+                        if self.comparison.snap { self.comparison.target=beat.round().clamp(s.ceil(),e.floor()); }
                         self.comparison.anchors[self.comparison.slot]=Some(Anchor{beat:self.comparison.target.round(),source:grid.sec(beat)});
                         if self.comparison.slot==0 { self.comparison.slot=1; self.comparison.target=(self.comparison.target+16.0).min(e.floor()); }
                     } }
