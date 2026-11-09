@@ -1043,23 +1043,38 @@ fn camelot_ord(k: &Option<String>) -> (i32, u8) {
         .unwrap_or((99, 0))
 }
 
+/// Search words split into required and excluded terms. A word starting with `-` or `!`
+/// excludes files that contain it; a lone `-` or `!` is ignored. Case-insensitive.
+pub fn query_terms(query: &str) -> (Vec<String>, Vec<String>) {
+    let mut include = vec![];
+    let mut exclude = vec![];
+    for w in query.split_whitespace() {
+        let w = w.to_lowercase();
+        match w.strip_prefix('-').or_else(|| w.strip_prefix('!')) {
+            Some(rest) => {
+                if !rest.is_empty() {
+                    exclude.push(rest.to_string());
+                }
+            }
+            None => include.push(w),
+        }
+    }
+    (include, exclude)
+}
+
 /// Indices of matching entries, sorted.
 pub fn view(entries: &[Entry], f: &Filter, sort: SortCol, asc: bool) -> Vec<usize> {
-    let words: Vec<String> = f
-        .query
-        .split_whitespace()
-        .map(|w| w.to_lowercase())
-        .collect();
+    let (include, exclude) = query_terms(f.query);
     let mut v: Vec<usize> = (0..entries.len())
         .filter(|&i| {
             let e = &entries[i];
-            if !words.is_empty() {
+            if !include.is_empty() || !exclude.is_empty() {
                 let hay = format!(
                     "{} {} {} {} {}",
                     e.title, e.artist, e.album, e.genre, e.path
                 )
                 .to_lowercase();
-                if !words.iter().all(|w| hay.contains(w)) {
+                if !include.iter().all(|w| hay.contains(w)) || exclude.iter().any(|w| hay.contains(w)) {
                     return false;
                 }
             }
@@ -1522,5 +1537,20 @@ mod browse_tests {
         assert_eq!(nodes[0].children[0].name, "House");
         assert_eq!(nodes[0].children[0].count, 2);
         assert_eq!(nodes[0].children[0].children[0].name, "Deep");
+    }
+
+    #[test]
+    fn search_words_prefixed_with_minus_or_bang_exclude_files() {
+        let entries = vec![
+            Entry { path: "/Music/House/Zebra.wav".into(), title: "AAA".into(), artist: "Remix Crew".into(), ..Default::default() },
+            Entry { path: "/Music/House/Deep/alpha.flac".into(), title: "ZZZ".into(), ..Default::default() },
+            Entry { path: "/Music/House2/first.mp3".into(), ..Default::default() },
+        ];
+        let q = |query: &str| view(&entries, &Filter { query, key_ref: None, bpm_ref: None }, SortCol::Filename, true);
+        assert_eq!(q("house -remix"), vec![1, 2]);
+        assert_eq!(q("house !deep -mp3"), vec![0]);
+        assert_eq!(q("-FLAC"), vec![2, 0]);
+        assert_eq!(q("- ! house"), vec![1, 2, 0], "lone prefixes are ignored");
+        assert_eq!(query_terms("a -b !c -"), (vec!["a".to_string()], vec!["b".to_string(), "c".to_string()]));
     }
 }

@@ -561,7 +561,7 @@ impl App {
                 ui.horizontal(|ui|{
                     ui.label(egui::RichText::new("🔍").color(theme::dim()));
                     let clear=!self.lib_q.is_empty();
-                    ui.add(egui::TextEdit::singleline(&mut self.lib_q).hint_text("Search filename, title, artist…").frame(false).desired_width(ui.available_width()-if clear {22.0} else {0.0}));
+                    ui.add(egui::TextEdit::singleline(&mut self.lib_q).hint_text("Search filename, title, artist…  (-word excludes)").frame(false).desired_width(ui.available_width()-if clear {22.0} else {0.0})).on_hover_text("Every word must match the filename, title, artist, album or genre. Start a word with - or ! to exclude files containing it, for example: house -remix !edit");
                     if clear && ui.add(egui::Button::new(egui::RichText::new("✖").size(11.0).color(theme::dim())).frame(false)).on_hover_text("Clear search").clicked(){self.lib_q.clear();}
                 });
             });
