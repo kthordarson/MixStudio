@@ -220,6 +220,9 @@ impl App {
         self.comparison = Default::default();
         self.mix = target.mix;
         self.file = target.file;
+        if target.clean {
+            if let Some(p) = self.file.clone() { self.note_recent(&p); }
+        }
         self.sel = None;
         self.sel_in = None;
         self.undo.clear();

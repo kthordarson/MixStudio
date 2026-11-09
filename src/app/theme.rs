@@ -98,19 +98,23 @@ fn path() -> PathBuf {
 }
 /// Loads the saved theme (falls back to the default on a missing or unreadable file).
 pub(super) fn load() {
-    let t = std::fs::read(path())
+    LOADED.call_once(|| {});
+    set_all(read_from(&path()));
+}
+fn read_from(p: &std::path::Path) -> [[u8; 3]; 7] {
+    std::fs::read(p)
         .ok()
         .and_then(|b| serde_json::from_slice::<[[u8; 3]; 7]>(&b).ok())
-        .unwrap_or(DEFAULT);
-    LOADED.call_once(|| {});
-    set_all(t);
+        .unwrap_or(DEFAULT)
 }
 fn save() -> std::io::Result<()> {
-    let p = path();
+    write_to(&path(), &all())
+}
+fn write_to(p: &std::path::Path, t: &[[u8; 3]; 7]) -> std::io::Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    std::fs::write(p, serde_json::to_vec(&all())?)
+    std::fs::write(p, serde_json::to_vec(t)?)
 }
 
 fn mix(a: C, b: C, t: f32) -> C {
@@ -154,7 +158,10 @@ pub(super) fn apply_style(ctx: &egui::Context) {
     st.visuals.faint_bg_color = row();
     st.visuals.hyperlink_color = accent();
     st.visuals.warn_fg_color = C::from_rgb(240, 200, 80);
-    ctx.set_style(st);
+    // egui keeps one style per theme; install ours for both so a system theme switch never reverts it.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_style_of(egui::Theme::Light, st.clone());
+    ctx.set_style_of(egui::Theme::Dark, st);
 }
 
 /// Contents of the colour menu in the top bar.
@@ -173,19 +180,37 @@ pub(super) fn menu(ui: &mut egui::Ui) {
             }
         });
     ui.separator();
+    let mut preset = false;
     ui.horizontal(|ui| {
         ui.label("Presets:");
         for (n, p) in PRESETS {
             if ui.button(n).clicked() {
                 t = p;
+                preset = true;
             }
         }
     });
-    if t != before {
+    // A preset always re-applies, even when the stored colours already match it.
+    if preset || t != before {
         set_all(t);
         apply_style(ui.ctx());
         if let Err(e) = save() {
             ui.colored_label(C::LIGHT_RED, format!("Could not save colours: {e}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn theme_round_trips_through_its_file() {
+        let dir = std::env::temp_dir().join(format!("mixstudio-theme-{}", std::process::id()));
+        let p = dir.join("theme.json");
+        let t = PRESETS[1].1;
+        write_to(&p, &t).unwrap();
+        assert_eq!(read_from(&p), t);
+        assert_eq!(read_from(&dir.join("missing.json")), DEFAULT);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

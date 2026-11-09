@@ -281,7 +281,7 @@ impl App {
         }
     }
     pub(super) fn comparison_tab(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().id_salt("comparison_workbench").show(ui,|ui| {
+        ui.scope(|ui| {
             let Some(i)=self.sel_in.filter(|i|self.mix.logical_transitions().iter().any(|x|x.1==*i)) else { return; };
             if self.comparison.incoming!=Some(i) { self.open_comparison(i); }
             if self.alignment_stamp(i).as_ref()!=Some(&self.comparison.stamp) {

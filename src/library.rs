@@ -139,6 +139,9 @@ pub struct Config {
     /// show a file/song info popup when hovering a library row (off by default)
     #[serde(default)]
     pub hover_info: bool,
+    /// recently opened or saved mix files, newest first
+    #[serde(default)]
+    pub recent: Vec<String>,
 }
 
 /// `Entry::folder` of tracks shown from an imported library

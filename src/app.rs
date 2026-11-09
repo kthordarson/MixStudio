@@ -980,9 +980,18 @@ impl App {
             }
         });
     }
+    /// Moves `p` to the front of the recent-mixes list and stores it with the library settings.
+    pub(super) fn note_recent(&mut self, p: &std::path::Path) {
+        let key = p.to_string_lossy().into_owned();
+        self.lib.cfg.recent.retain(|x| x != &key);
+        self.lib.cfg.recent.insert(0, key);
+        self.lib.cfg.recent.truncate(10);
+        if let Err(e) = self.lib.save_cfg() { self.status = format!("Could not save the recent list: {e}"); }
+    }
     fn save(&mut self, p: PathBuf) {
         match crate::recovery::save_project(&p, &self.mix) {
             Ok(()) => {
+                self.note_recent(&p);
                 self.file = Some(p.clone());
                 self.persistence.saved(&self.mix);
                 self.status = format!("Saved: {} (previous version: .bak)", p.display());
@@ -1586,6 +1595,7 @@ impl App {
     }
     fn master_tab(&mut self, ui: &mut egui::Ui) {
         let dim = |s: &str| egui::RichText::new(s).color(theme::dim()).size(11.0);
+        let h = ui.available_height() - 12.0;
         egui::ScrollArea::vertical().id_salt("master_settings").show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 // Column 1: tempo + transport options
@@ -1606,7 +1616,7 @@ impl App {
                     if self.mix.tempo_mode == 2 { ui.label(dim("Manual: edit the tempo nodes in the tempo lane (click to add, drag, right-click to delete).")); }
                     if self.mix.tempo_mode == 1 { ui.label(dim("Auto: every track plays at its own tempo and the tempo glides through each transition.")); }
                 });
-                ui.separator();
+                vsep(ui, h);
                 // Column 2: output gain, clipper and meters
                 ui.vertical(|ui| {
                     ui.set_max_width(560.0);
@@ -1614,7 +1624,7 @@ impl App {
                     ui.label(egui::RichText::new("Output").strong());
                     self.master_levels_ui(ui);
                 });
-                ui.separator();
+                vsep(ui, h);
                 // Column 3: export
                 ui.vertical(|ui| {
                     ui.set_max_width(360.0);
@@ -2394,6 +2404,11 @@ impl eframe::App for App {
 }
 
 /// Round 32 px transport button; accent-coloured text gets an accent border.
+/// Vertical divider of a fixed height for column layouts inside scroll areas.
+fn vsep(ui: &mut egui::Ui, h: f32) {
+    let (r, _) = ui.allocate_exact_size(vec2(9.0, h.max(20.0)), Sense::hover());
+    ui.painter().vline(r.center().x, r.y_range(), Stroke::new(1.0_f32, theme::line()));
+}
 fn circ(ui: &mut egui::Ui, t: &str, fill: C, fg: C, tip: &str) -> egui::Response {
     ui.add(egui::Button::new(egui::RichText::new(t).color(fg).size(16.0)).fill(fill).rounding(16.0).min_size(vec2(32.0, 32.0)).stroke(Stroke::new(1.0_f32, if fg == theme::accent() { theme::accent() } else { theme::line() }))).on_hover_text(tip)
 }
@@ -2437,6 +2452,18 @@ impl App {
                         if ui.button("Open mix…").clicked() { self.dialog(false, 0); ui.close_menu(); }
                         if ui.button("Save").clicked() { match self.file.clone() { Some(p) => self.save(p), None => self.dialog(true, 1) } ui.close_menu(); }
                         if ui.button("Save as…").clicked() { self.dialog(true, 1); ui.close_menu(); }
+                        if !self.lib.cfg.recent.is_empty() {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Recent").color(theme::dim()).size(11.0));
+                            let mut pick = None;
+                            for p in self.lib.cfg.recent.iter().take(8) {
+                                let path = std::path::Path::new(p);
+                                let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
+                                let current = self.file.as_deref() == Some(path);
+                                if ui.add_enabled(!current, egui::Button::new(name)).on_hover_text(p).clicked() { pick = Some(PathBuf::from(p)); }
+                            }
+                            if let Some(p) = pick { self.open(p); ui.close_menu(); }
+                        }
                         ui.separator();
                         ui.label(if !self.persistence.enabled {"Autosave disabled for demo".to_string()}else if !self.persistence.dirty {"No unsaved changes".to_string()}else if self.persistence.pending_write {"Autosaving…".to_string()}else if let Some(at)=self.persistence.last_good{format!("Recovery copy: {} seconds ago",crate::recovery::now().saturating_sub(at))}else{"Autosave: checks changes every second, writes at most every 15 seconds".into()});
                         if let Some(e)=&self.persistence.error{ui.colored_label(C::LIGHT_RED,format!("Recovery failed: {e}"));}
@@ -6135,6 +6162,7 @@ impl App {
     fn beatgrid_tab(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().id_salt("beatgrid_tools").show(ui,|ui| {
             let left_w = (ui.available_width() * 0.5).clamp(360.0, 640.0);
+            let top = ui.cursor().top();
             ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
             ui.set_max_width(left_w); ui.set_min_width(left_w);
@@ -6201,7 +6229,8 @@ impl App {
                 ui.label(egui::RichText::new(match self.bm_mode { BmMode::Grid=>"Whole grid: correct a constant phase error. Clip placement stays fixed.",BmMode::Single=>"Single beat: correct one marker; neighbouring beats stay anchored.",BmMode::Following=>"Beat + following: stretch from the beat one bar before the target; earlier beats stay anchored." }).color(theme::dim()).size(11.0));
             } else { ui.label("Select a track to edit its beatgrid."); }
             });
-            ui.separator();
+            let col_h = ui.min_rect().bottom() - top;
+            vsep(ui, col_h);
             ui.vertical(|ui| { self.beatmatch_ui(ui,true); });
             });
             ui.separator();
@@ -6229,7 +6258,7 @@ impl App {
             if ui.add_enabled(!busy,egui::Button::new(egui::RichText::new("⟲ Auto-align B").color(theme::bg())).fill(theme::accent())).on_hover_text("Measure the overlap and, when the attacks agree, correct the incoming grid's offset (and tempo drift) in one step. Measures again afterwards to verify. One Undo restores it.").clicked() { self.request_beat_check(incoming,ui.ctx(),true); }
             if ui.add_enabled(!busy,egui::Button::new("Measure only")).clicked() { self.request_beat_check(incoming,ui.ctx(),false); }
             if busy { ui.spinner(); ui.label("Measuring attacks…"); }
-            if ui.button("Show overlap").clicked() { self.sel=Some(incoming); self.show_overlap(incoming,true); }
+            if ui.button("Show overlap").clicked() { self.sel=Some(incoming); self.comparison.span=0.0; self.show_overlap(incoming,true); }
         });
         ui.horizontal_wrapped(|ui| {
             let editable =
