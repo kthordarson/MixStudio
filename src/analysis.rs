@@ -110,7 +110,7 @@ mod precision_tests {
         }
         let path = std::env::temp_dir().join(format!("mixstudio-nan-{}.wav", std::process::id()));
         std::fs::write(&path, &wav).unwrap();
-        let (decoded, _, _) = decode(&path).unwrap();
+        let (decoded, _, _, _) = decode(&path).unwrap();
         std::fs::remove_file(&path).ok();
         assert!(
             decoded.l.iter().chain(&decoded.r).all(|x| x.is_finite()),
@@ -428,7 +428,7 @@ mod precision_tests {
         let bytes = std::fs::read(&path).unwrap();
         let mix: crate::model::Mix = serde_json::from_slice(&bytes).unwrap();
         for (i, t) in mix.tracks.iter().enumerate() {
-            let (audio, title, artist) = decode(Path::new(&t.path)).unwrap();
+            let (audio, title, artist, _) = decode(Path::new(&t.path)).unwrap();
             let an = analyse(&audio, title, artist, Path::new(&t.path));
             eprintln!(
                 "source {} sr={} old_bpm={:.7} new_bpm={:.7} beats={} duration={:.2}s",
@@ -459,6 +459,9 @@ impl Audio {
 /// Samples per waveform peak column (at the track's own sample rate).
 /// Bump when BPM/downbeat/key analysis changes so cached results are recomputed.
 pub const ANALYSIS_VERSION: u32 = 15;
+/// Bump when decoding becomes more capable (new fallbacks, decoder upgrades). Library entries whose
+/// analysis failed under an older decoder are retried; successful analyses are untouched.
+pub const DECODER_VERSION: u32 = 1;
 
 pub const PEAK_HOP: usize = 441;
 
@@ -486,6 +489,9 @@ pub struct Analysis {
     /// Legacy cache hint. Keep Dynamic as the safe default; Flex requires manual selection.
     #[serde(default = "dynamic_grid")]
     pub recommended_grid_mode: u8,
+    /// Set when the file needed repair to decode (ffmpeg, or frames replaced with silence). Not cached.
+    #[serde(skip)]
+    pub decode_note: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct RhythmEvidence {
@@ -597,7 +603,56 @@ pub fn mp3_gapless_trim(path: &Path) -> Option<(f64, f64)> {
     (d + p > 0).then(|| (d as f64 / sr, p as f64 / sr))
 }
 
-pub fn decode(path: &Path) -> anyhow::Result<(Audio, String, String)> {
+/// Decoded audio, title, artist and, when the file needed repair, a note describing what happened.
+pub type Decoded = (Audio, String, String, Option<String>);
+
+/// Strict decode first. A file with errors is decoded by ffmpeg when it is installed; otherwise the
+/// built-in decoder plays past the damaged frames with silence in their place. Only a file that
+/// nothing can read fails. A repaired file always carries a note so it is never taken for a clean one.
+pub fn decode(path: &Path) -> anyhow::Result<Decoded> {
+    // A file that cannot be opened or whose container is unknown has nothing to repair.
+    let probed = probe(path)?;
+    let strict = match decode_probed(path, probed, false) {
+        Ok((audio, title, artist, _)) => return Ok((audio, title, artist, None)),
+        Err(e) => e,
+    };
+    if ffmpeg_available() {
+        match decode_ffmpeg(path) {
+            Ok(audio) => {
+                let (title, artist) = read_tags(path).unwrap_or_default();
+                return Ok((
+                    audio,
+                    title,
+                    artist,
+                    Some(format!("Decoded with ffmpeg because of an error in the file: {strict}")),
+                ));
+            }
+            Err(e) => eprintln!("ffmpeg could not decode {}: {e}", path.display()),
+        }
+    }
+    match probe(path).and_then(|p| decode_probed(path, p, true)) {
+        Ok((audio, title, artist, skipped)) => Ok((
+            audio,
+            title,
+            artist,
+            Some(format!(
+                "Played past errors in the file ({skipped} damaged frame(s) replaced with silence): {strict}"
+            )),
+        )),
+        Err(_) => Err(strict),
+    }
+}
+
+struct Probed {
+    fmt: Box<dyn symphonia::core::formats::FormatReader>,
+    track: symphonia::core::formats::Track,
+    title: String,
+    artist: String,
+    wave: bool,
+}
+
+/// Opens the container and reads the title and artist tags.
+fn probe(path: &Path) -> anyhow::Result<Probed> {
     use std::io::{Read, Seek};
     let mut f = std::fs::File::open(path)?;
     let mut header = [0u8; 12];
@@ -641,6 +696,28 @@ pub fn decode(path: &Path) -> anyhow::Result<(Audio, String, String)> {
         .default_track()
         .ok_or_else(|| anyhow::anyhow!("no audio track"))?
         .clone();
+    Ok(Probed { fmt, track, title, artist, wave })
+}
+
+fn read_tags(path: &Path) -> anyhow::Result<(String, String)> {
+    let p = probe(path)?;
+    Ok((p.title, p.artist))
+}
+
+/// Decodes with symphonia. Strict mode rejects any damage (and verifies lossless sample counts and
+/// checksums). Tolerant mode replaces undecodable frames with silence and returns how many it skipped.
+#[cfg(test)]
+fn decode_symphonia(path: &Path, tolerant: bool) -> anyhow::Result<(Audio, String, String, usize)> {
+    decode_probed(path, probe(path)?, tolerant)
+}
+/// ffmpeg presence, checked once per process.
+fn ffmpeg_available() -> bool {
+    static FFMPEG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FFMPEG.get_or_init(crate::export::has_ffmpeg)
+}
+fn decode_probed(path: &Path, probed: Probed, tolerant: bool) -> anyhow::Result<(Audio, String, String, usize)> {
+    use symphonia::core::errors::Error;
+    let Probed { mut fmt, track, title, artist, wave } = probed;
     let codecs = symphonia::default::get_codecs();
     let mut dec = codecs.make(&track.codec_params, &DecoderOptions { verify: true })?;
     // WAVE PCM and native FLAC declare samples. Other container durations may
@@ -661,28 +738,45 @@ pub fn decode(path: &Path) -> anyhow::Result<(Audio, String, String)> {
         None
     };
     let mut sr = track.codec_params.sample_rate.unwrap_or(44100);
+    let fallback_frames = track.codec_params.max_frames_per_packet.unwrap_or(1152) as usize;
     let (mut l, mut r) = (Vec::new(), Vec::new());
+    let mut skipped = 0usize;
+    let mut last_frames = 0usize;
     loop {
         let pkt = match fmt.next_packet() {
             Ok(p) => p,
-            Err(symphonia::core::errors::Error::IoError(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break
+            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(Error::ResetRequired) if tolerant => {
+                dec.reset();
+                continue;
+            }
+            // The stream is lost; keep what was decoded so far.
+            Err(_) if tolerant => {
+                skipped += 1;
+                break;
             }
             Err(e) => return Err(anyhow::anyhow!("audio packet error: {e}")),
         };
         if pkt.track_id() != track.id {
             continue;
         }
-        let buf = dec
-            .decode(&pkt)
-            .map_err(|e| anyhow::anyhow!("audio decode error: {e}"))?;
+        let buf = match dec.decode(&pkt) {
+            Ok(b) => b,
+            Err(Error::DecodeError(_)) | Err(Error::IoError(_)) if tolerant => {
+                skipped += 1;
+                let n = if last_frames > 0 { last_frames } else { fallback_frames };
+                l.extend(std::iter::repeat(0.0f32).take(n));
+                r.extend(std::iter::repeat(0.0f32).take(n));
+                continue;
+            }
+            Err(e) => return Err(anyhow::anyhow!("audio decode error: {e}")),
+        };
         let spec = *buf.spec();
         sr = spec.rate;
         let ch = spec.channels.count().max(1);
         let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
         sb.copy_interleaved_ref(buf);
+        last_frames = sb.samples().len() / ch;
         // A single NaN/inf (a damaged float file) would poison every filter and envelope downstream.
         let clean = |x: f32| if x.is_finite() { x } else { 0.0 };
         for fr in sb.samples().chunks(ch) {
@@ -705,11 +799,17 @@ pub fn decode(path: &Path) -> anyhow::Result<(Audio, String, String)> {
                 .chain(&r[expected as usize..])
                 .all(|&s| s == 0.0);
         if actual != expected && !padded_flac {
-            anyhow::bail!("incomplete audio: expected {expected} frames, decoded {actual}");
+            if !tolerant {
+                anyhow::bail!("incomplete audio: expected {expected} frames, decoded {actual}");
+            }
+            skipped += 1;
         }
     }
     if dec.finalize().verify_ok == Some(false) {
-        anyhow::bail!("audio integrity check failed");
+        if !tolerant {
+            anyhow::bail!("audio integrity check failed");
+        }
+        skipped += 1;
     }
     if flac {
         if let Some(expected) = exact_frames {
@@ -717,7 +817,47 @@ pub fn decode(path: &Path) -> anyhow::Result<(Audio, String, String)> {
             r.truncate(expected as usize);
         }
     }
-    Ok((Audio { sr, l, r }, title, artist))
+    Ok((Audio { sr, l, r }, title, artist, skipped))
+}
+
+/// Full decode through ffmpeg (stereo 32-bit float on stdout). ffmpeg tolerates and repairs streams
+/// the built-in decoder rejects; it also applies MP3 encoder delay and padding itself.
+fn decode_ffmpeg(path: &Path) -> anyhow::Result<Audio> {
+    let sr = ffprobe_rate(path).unwrap_or(44100);
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args(["-map", "0:a:0", "-vn", "-f", "f32le", "-acodec", "pcm_f32le", "-ac", "2", "-ar"])
+        .arg(sr.to_string())
+        .arg("-")
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!("ffmpeg failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    if out.stdout.len() < 8 {
+        anyhow::bail!("ffmpeg produced no audio");
+    }
+    let n = out.stdout.len() / 8;
+    let (mut l, mut r) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    let clean = |x: f32| if x.is_finite() { x } else { 0.0 };
+    for fr in out.stdout.chunks_exact(8) {
+        l.push(clean(f32::from_le_bytes([fr[0], fr[1], fr[2], fr[3]])));
+        r.push(clean(f32::from_le_bytes([fr[4], fr[5], fr[6], fr[7]])));
+    }
+    Ok(Audio { sr, l, r })
+}
+
+fn ffprobe_rate(path: &Path) -> Option<u32> {
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|&x| (8000..=192_000).contains(&x))
 }
 
 fn mono(a: &Audio) -> Vec<f32> {
@@ -1279,22 +1419,24 @@ pub fn load(path: &Path) -> anyhow::Result<(Audio, Analysis)> {
     })
 }
 fn load_unguarded(path: &Path) -> anyhow::Result<(Audio, Analysis)> {
-    let (audio, title, artist) = decode(path)?;
+    let (audio, title, artist, note) = decode(path)?;
     let cp = cache_path(path);
     if let Some(c) = &cp {
         if let Ok(s) = std::fs::read(c) {
-            if let Ok(a) = serde_json::from_slice::<Analysis>(&s) {
+            if let Ok(mut a) = serde_json::from_slice::<Analysis>(&s) {
                 if a.version == ANALYSIS_VERSION {
+                    a.decode_note = note;
                     return Ok((audio, a));
                 }
             }
         }
     }
-    let a = analyse(&audio, title, artist, path);
+    let mut a = analyse(&audio, title, artist, path);
     if let Some(c) = cp {
         let _ = std::fs::create_dir_all(c.parent().unwrap());
         let _ = std::fs::write(c, serde_json::to_vec(&a).unwrap_or_default());
     }
+    a.decode_note = note;
     Ok((audio, a))
 }
 
@@ -1334,6 +1476,7 @@ pub fn analyse(audio: &Audio, title: String, artist: String, path: &Path) -> Ana
         artist,
         flex,
         recommended_grid_mode,
+        decode_note: None,
     }
 }
 
@@ -2198,8 +2341,9 @@ mod decode_integrity_tests {
         std::fs::write(&path, &bytes).unwrap();
         let truncated = decode(&path);
         std::fs::remove_dir_all(dir).unwrap();
-        assert!(corrupt.is_err(), "corrupted FLAC payload accepted");
-        assert!(truncated.is_err(), "truncated FLAC accepted");
+        // Damage is either rejected or repaired with a note; it is never passed off as a clean file.
+        assert!(corrupt.map(|d| d.3.is_some()).unwrap_or(true), "corrupted FLAC payload accepted as clean");
+        assert!(truncated.map(|d| d.3.is_some()).unwrap_or(true), "truncated FLAC accepted as clean");
     }
     #[test]
     fn compressed_delay_and_padding_are_not_exact_pcm_counts() {
@@ -2234,7 +2378,7 @@ mod decode_integrity_tests {
                 .unwrap();
             assert!(status.success(), "fixture encoder failed: {name}");
             let result = decode(&path);
-            assert!(result.is_ok(), "valid {name} rejected: {:?}", result.err());
+            assert!(result.as_ref().is_ok_and(|d| d.3.is_none()), "valid {name} rejected or repaired: {:?}", result.as_ref().err());
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2311,8 +2455,45 @@ mod decode_integrity_tests {
         let result = decode(&path);
         std::fs::remove_dir_all(dir).unwrap();
         assert!(
-            result.is_err(),
-            "a WAV missing 75% of its declared samples was accepted"
+            result.map(|d| d.3.is_some()).unwrap_or(true),
+            "a WAV missing 75% of its declared samples was accepted as clean"
         );
+    }
+    #[test]
+    fn damaged_mp3_is_repaired_with_a_note_or_played_past_errors() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("mixstudio-repair-{}", crate::recovery::unique_id()));
+        std::fs::create_dir(&dir).unwrap();
+        let source = dir.join("source.wav");
+        std::fs::write(&source, wav(40000)).unwrap();
+        let path = dir.join("damaged.mp3");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-nostdin", "-i"])
+            .arg(&source)
+            .args(["-c:a", "libmp3lame", "-b:a", "128k"])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mut bytes = std::fs::read(&path).unwrap();
+        let n = bytes.len();
+        // Wreck a stretch in the middle: side information and audio data of several frames.
+        for b in &mut bytes[n * 2 / 5..n * 2 / 5 + 600] {
+            *b = 0x55;
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        let strict = decode_symphonia(&path, false);
+        let tolerant = decode_symphonia(&path, true);
+        let repaired = decode(&path);
+        std::fs::remove_dir_all(dir).unwrap();
+        let tolerant = tolerant.expect("tolerant decode keeps the readable audio");
+        assert!(tolerant.0.l.len() > 20000, "tolerant decode lost most of the file");
+        let repaired = repaired.expect("a damaged mp3 still decodes");
+        assert!(repaired.0.l.len() > 20000);
+        if strict.is_err() {
+            assert!(repaired.3.is_some(), "a repaired file must carry a note");
+        }
     }
 }

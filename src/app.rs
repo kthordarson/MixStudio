@@ -2164,8 +2164,10 @@ impl eframe::App for App {
                                     }
                                 }
                             } else {
-                                self.status =
-                                    format!("{} — {:.1} BPM, {}", an.title, an.bpm, an.key);
+                                self.status = match &an.decode_note {
+                                    Some(note) => format!("{} — {:.1} BPM, {} · {}", an.title, an.bpm, an.key, note),
+                                    None => format!("{} — {:.1} BPM, {}", an.title, an.bpm, an.key),
+                                };
                                 self.insert(p, au, an, s);
                             }
                         }
@@ -6187,6 +6189,7 @@ impl App {
                 if let Some((_,a))=self.store.get(&t.path) {
                     if a.rhythm.as_ref().is_some_and(|e|e.phase_bridged) {ui.colored_label(C::LIGHT_YELLOW,"Source analysis: a supported steady clock bridges an inconsistent passage. Reset to analysis adopts it; listen and check bar 1.");}
                     if let Some(note)=a.rhythm.as_ref().and_then(|e|e.warning()) {ui.colored_label(C::LIGHT_YELLOW,note);}
+                    if let Some(note)=&a.decode_note {ui.colored_label(C::LIGHT_YELLOW,format!("Repaired file: {note}"));}
                 }
                 if self.stale_analysis(i) { ui.horizontal_wrapped(|ui| {
                     ui.colored_label(C::LIGHT_YELLOW,"This clip keeps a beatgrid from an older analysis. The current analysis differs; adopt it and listen.");
@@ -7055,6 +7058,8 @@ mod section_ui_tests {
         b.start_beat = 16.0;
         a.mix.tracks.push(b);
         a.open_comparison(1);
+        // This test covers the typed-target mode; snapping to the clicked beat is the default.
+        a.comparison.snap = false;
         let before = serde_json::to_string(&a.mix).unwrap();
         let draw = |a: &mut App, events| {
             ctx.run(

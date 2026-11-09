@@ -25,6 +25,11 @@ fn transient(err: &Option<String>) -> bool {
     err.as_deref()
         .is_some_and(|e| e == TAGS_TIMED_OUT || e == ANALYSIS_TIMED_OUT)
 }
+/// A failed analysis is retried when it timed out or when the decoder has improved since.
+fn retry_analysis(e: &Entry) -> bool {
+    transient(&e.analysis_error)
+        || (e.analysis_error.is_some() && e.decoder_version != crate::analysis::DECODER_VERSION)
+}
 
 pub fn is_audio(p: &Path) -> bool {
     p.extension()
@@ -170,6 +175,9 @@ pub struct Entry {
     pub analysis_error: Option<String>,
     #[serde(default)]
     pub analysis_version: u32,
+    /// decoder behind a stored analysis_error; a failure from an older decoder is retried
+    #[serde(default)]
+    pub decoder_version: u32,
 }
 
 impl Entry {
@@ -321,11 +329,16 @@ mod audit_tests {
         ix.entries[0].analysis_version = crate::analysis::ANALYSIS_VERSION;
         ix.entries[0].analysis_error = Some(ANALYSIS_TIMED_OUT.into());
         ix.entries[1].analysis_version = crate::analysis::ANALYSIS_VERSION;
+        ix.entries[1].decoder_version = crate::analysis::DECODER_VERSION;
         ix.entries[1].analysis_error = Some("could not decode audio".into());
         save_index(&dir, &ix).unwrap();
         let back = load_index(&dir);
         assert!(back.entries[0].analysis_error.is_none());
         assert!(back.entries[1].analysis_error.is_some());
+        // A failure recorded by an older decoder is retried once the decoder improves.
+        ix.entries[1].decoder_version = crate::analysis::DECODER_VERSION - 1;
+        save_index(&dir, &ix).unwrap();
+        assert!(load_index(&dir).entries[1].analysis_error.is_none());
         // A timed-out decode hands its thread back, so the worker can wait for it instead of starting another.
         // (A FIFO blocks the decode until the test opens and closes its other end.)
         #[cfg(unix)]
@@ -517,6 +530,7 @@ mod audit_tests {
         );
         let mut current = restored;
         current.entries[0].analysis_version = crate::analysis::ANALYSIS_VERSION;
+        current.entries[0].decoder_version = crate::analysis::DECODER_VERSION;
         current.entries[0].bpm = Some(127.98);
         current.entries[0].analysis_error = Some("current decoder error".into());
         save_index(&dir, &current).unwrap();
@@ -639,7 +653,7 @@ pub fn load_index(dir: &Path) -> Index {
         };
     }
     for e in &mut i.entries {
-        if e.analysis_version != crate::analysis::ANALYSIS_VERSION || transient(&e.analysis_error) {
+        if e.analysis_version != crate::analysis::ANALYSIS_VERSION || retry_analysis(e) {
             e.bpm = None;
             e.key = None;
             e.analysis_error = None;
@@ -851,7 +865,7 @@ pub fn scan(
                                 {
                                     let mut e = (*e).clone();
                                     e.folder = f.clone();
-                                    if transient(&e.analysis_error) {
+                                    if retry_analysis(&e) {
                                         e.analysis_error = None;
                                     }
                                     out.push(e);
@@ -1460,6 +1474,7 @@ impl Library {
                     if let Some(&i) = self.pos.get(&p) {
                         let e = &mut self.index.entries[i];
                         e.analysis_version = crate::analysis::ANALYSIS_VERSION;
+                        e.decoder_version = crate::analysis::DECODER_VERSION;
                         match r {
                             Ok((b, k, d)) => {
                                 e.bpm = Some(b);

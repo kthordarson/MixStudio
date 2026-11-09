@@ -109,7 +109,7 @@ fn inspect_local_corpus_without_mutating_sources() {
         eprintln!("corpus analysing {}", path.display());
         let before = std::fs::metadata(path).unwrap();
         let source_sha256 = format!("{:x}", sha2::Sha256::digest(std::fs::read(path).unwrap()));
-        let (audio, title, artist) = decode(path).expect("decode local audio");
+        let (audio, title, artist, _) = decode(path).expect("decode local audio");
         let an = analyse(&audio, title, artist, path);
         let rhythm = rhythm_mono(&audio);
         let period = 60.0 / an.bpm;
@@ -237,7 +237,7 @@ fn inspect_manual_waveform_references() {
             case["source_sha256"].as_str().unwrap(),
             "source differs from annotated recording"
         );
-        let (audio, _, _) = decode(path).unwrap();
+        let (audio, _, _, _) = decode(path).unwrap();
         assert_eq!(
             audio.l.len() as u64,
             case["frames"].as_u64().unwrap(),
@@ -309,7 +309,7 @@ fn inspect_saved_source_phase_continuity() {
     let mix: crate::model::Mix =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     for (index, t) in mix.tracks.iter().enumerate() {
-        let (audio, _, _) = decode(std::path::Path::new(&t.path)).unwrap();
+        let (audio, _, _, _) = decode(std::path::Path::new(&t.path)).unwrap();
         let m = rhythm_mono(&audio);
         let (bpm, offset) = detect_bpm(&m, audio.sr);
         let (o, fps) = onset_env(&m, audio.sr);
@@ -360,7 +360,7 @@ fn compare_external_beat_predictions_without_mutating_sources() {
             file["source_sha256"].as_str().unwrap(),
             "source differs from external prediction recording"
         );
-        let (audio, title, artist) = decode(&path).unwrap();
+        let (audio, title, artist, _) = decode(&path).unwrap();
         let an = analyse(&audio, title, artist, &path);
         let external: Vec<f64> = file["beats"]
             .as_array()

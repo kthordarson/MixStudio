@@ -522,7 +522,7 @@ fn main() {
         for p in &args[2..] {
             let pa = Path::new(p);
             match analysis::decode(pa) {
-                Ok((a, t, ar)) => {
+                Ok((a, t, ar, _)) => {
                     let an = analysis::analyse(&a, t, ar, pa);
                     println!(
                         "{p}: bpm {:.3} downbeat {:.3}s key {}",
@@ -2438,7 +2438,7 @@ fn tempo_export_tests(dir: &Path) -> bool {
             .clone()
             .and_then(|_| analysis::decode(&p).map_err(|e| e.to_string()));
         let (pass, info) = match back {
-            Ok((a, _, _)) => {
+            Ok((a, _, _, _)) => {
                 let n = a.l.len().min(tone.len());
                 let lag = if fmt == 3 {
                     (0..3000)

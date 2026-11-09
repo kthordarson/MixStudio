@@ -168,8 +168,10 @@ impl App {
                                 (Some(e), _) => format!("Cannot play: {e}"),
                                 (None, None) => "Loading…".into(),
                                 (None, Some((_, an))) => format!(
-                                    "Preview · original tempo {:.1} BPM · {}",
-                                    an.bpm, an.key
+                                    "Preview · original tempo {:.1} BPM · {}{}",
+                                    an.bpm,
+                                    an.key,
+                                    if an.decode_note.is_some() { " · repaired file" } else { "" }
                                 ),
                             })
                             .size(10.5)
