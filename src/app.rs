@@ -36,7 +36,6 @@ const MAX_DRIFT_PERCENT: f64 = 2.0;
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
-    Zoom,
     Library,
     Playlist,
     Transition,
@@ -202,6 +201,8 @@ pub struct App {
     listen: Option<library_listen::Listen>,
     out: crate::audio::Audio,
     ppb: f32,
+    /// Timeline width in points from the last frame (for Fit in the toolbar).
+    tl_w: f32,
     scroll: f64,
     tab: Tab,
     top: usize,
@@ -531,6 +532,7 @@ impl App {
             store: HashMap::new(),
             out,
             ppb: 7.0,
+            tl_w: 800.0,
             scroll: -4.0,
             tab: Tab::Playlist,
             top: 3,
@@ -2499,7 +2501,6 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
                             let tabs = [
-                                (Tab::Zoom, "🔍 Zoom"),
                                 (Tab::Library, "📚 Library"),
                                 (Tab::Playlist, "☰ Playlist"),
                                 (Tab::Transition, "🔀 Transition"),
@@ -2547,10 +2548,11 @@ impl App {
     }
 
     fn transport(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("transport").exact_height(46.0).frame(egui::Frame::none().fill(theme::panel()).inner_margin(egui::Margin::symmetric(10.0, 6.0))).show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("transport").exact_height(38.0).frame(egui::Frame::none().fill(theme::panel()).inner_margin(egui::Margin::symmetric(8.0, 4.0))).show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                if circ(ui, "+", theme::panel(), theme::accent(), "Add tracks (mp3, wav, flac, ogg, m4a)").clicked() { self.pick_files(None); }
-                if ui.add(egui::Button::new(egui::RichText::new("Auto-order").color(C::BLACK).size(14.0)).fill(theme::accent()).rounding(16.0).min_size(vec2(96.0, 30.0))).on_hover_text("Reorder the playlist for smooth key (Camelot) and tempo transitions. Locked tracks stay put. Undo restores the old order.").clicked() { self.auto_order(); }
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if ui.add(egui::Button::new(egui::RichText::new("+").color(theme::accent()).size(15.0)).fill(theme::panel()).rounding(14.0).min_size(vec2(26.0, 26.0)).stroke(Stroke::new(1.0_f32, theme::accent()))).on_hover_text("Add tracks (mp3, wav, flac, ogg, m4a)").clicked() { self.pick_files(None); }
+                if ui.add(egui::Button::new(egui::RichText::new("Auto-order").color(C::BLACK).size(12.0)).fill(theme::accent()).rounding(13.0).min_size(vec2(72.0, 24.0))).on_hover_text("Reorder the playlist for smooth key (Camelot) and tempo transitions. Locked tracks stay put. Undo restores the old order.").clicked() { self.auto_order(); }
                 ui.menu_button("⏷", |ui| { ui.label(egui::RichText::new("Auto-order").strong());
                     for m in crate::automix::Mode::ALL { ui.radio_value(&mut self.ao_mode, m, m.name()); }
                     ui.separator(); ui.label(egui::RichText::new("Energy").color(theme::dim()));
@@ -2558,9 +2560,9 @@ impl App {
                     ui.separator(); ui.checkbox(&mut self.ao_keep_first, "Keep first track in place");
                     ui.label(egui::RichText::new("Lock tracks with 🔒 in the playlist.").color(theme::dim()).size(11.0));
                     if ui.button("Auto-order now").clicked() { self.auto_order(); ui.close_menu(); } }).response.on_hover_text("Auto-order options");
-                if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("⟲").rounding(16.0).min_size(vec2(30.0, 30.0))).on_hover_text("Undo (Ctrl+Z)").clicked() { self.do_undo(); }
-                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("⟳").rounding(16.0).min_size(vec2(30.0, 30.0))).on_hover_text("Redo (Ctrl+Shift+Z)").clicked() { self.do_redo(); }
-                if ui.add(egui::Button::new("✂").rounding(16.0).min_size(vec2(30.0, 30.0))).on_hover_text("Remove selected track").clicked() { self.remove_sel(); }
+                if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("⟲").rounding(12.0).min_size(vec2(24.0, 24.0))).on_hover_text("Undo (Ctrl+Z)").clicked() { self.do_undo(); }
+                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("⟳").rounding(12.0).min_size(vec2(24.0, 24.0))).on_hover_text("Redo (Ctrl+Shift+Z)").clicked() { self.do_redo(); }
+                if ui.add(egui::Button::new("✂").rounding(12.0).min_size(vec2(24.0, 24.0))).on_hover_text("Remove selected track").clicked() { self.remove_sel(); }
                 ui.menu_button("Edit  ⏷", |ui| {
                     if ui.button("Add tracks…").clicked() { self.pick_files(None); ui.close_menu(); }
                     if ui.button("Remove selected track").clicked() { self.remove_sel(); ui.close_menu(); }
@@ -2572,12 +2574,19 @@ impl App {
                 });
                 egui::ComboBox::from_id_salt("bars").width(46.0).selected_text(format!("{}", self.bars))
                     .show_ui(ui, |ui| { for b in [4, 8, 16, 32] { ui.selectable_value(&mut self.bars, b, format!("{b} bars")); } }).response.on_hover_text("Bar length for loop and overlap");
+                ui.add_space(8.0); ui.separator(); ui.add_space(4.0);
+                ui.label(egui::RichText::new("🔍").size(13.0));
+                ui.spacing_mut().slider_width = 110.0;
+                ui.add(egui::Slider::new(&mut self.ppb, 0.3..=80.0).logarithmic(true).show_value(false)).on_hover_text("Zoom: pixels per beat. Ctrl + scroll zooms around the pointer, scroll moves in time.");
+                ui.add(egui::DragValue::new(&mut self.ppb).range(0.3..=80.0).speed(0.1).fixed_decimals(1)).on_hover_text("Pixels per beat");
+                if ui.add(egui::Button::new("Fit").min_size(vec2(0.0, 24.0))).on_hover_text("Fit the whole mix in the timeline").clicked() { self.ppb = (self.tl_w / self.mix.length_beats().max(64.0) as f32).max(0.3); self.scroll = 0.0; }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(egui::Button::new("⌨").min_size(vec2(30.0, 28.0))).on_hover_text("Space: play · Ctrl+scroll: zoom · Scroll: pan · Delete: remove · Ctrl+Z / Ctrl+Shift+Z");
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add(egui::Button::new("⌨").min_size(vec2(26.0, 24.0))).on_hover_text("Space: play · Ctrl+scroll: zoom · Scroll: pan · Delete: remove · Ctrl+Z / Ctrl+Shift+Z");
                     let mo = self.mix.metronome;
-                    if ui.add(egui::Button::new(egui::RichText::new("A").strong().color(if mo { C::BLACK } else { theme::txt() })).fill(if mo { theme::accent() } else { C::from_rgb(52, 54, 60) }).min_size(vec2(30.0, 28.0))).on_hover_text("Metronome: click on mix beats, accented on the downbeat (never exported). Volume in the Master tab.").clicked() { self.mix.metronome = !mo; }
-                    ui.add(egui::Button::new("🎧").min_size(vec2(30.0, 28.0))).on_hover_text("Headphone cue (v2)");
-                    if ui.add(egui::Button::new(if self.lock { "🔒" } else { "🔓" }).min_size(vec2(30.0, 28.0))).on_hover_text("Lock tracks so they can't be dragged").clicked() { self.lock = !self.lock; }
+                    if ui.add(egui::Button::new(egui::RichText::new("A").strong().color(if mo { C::BLACK } else { theme::txt() })).fill(if mo { theme::accent() } else { C::from_rgb(52, 54, 60) }).min_size(vec2(26.0, 24.0))).on_hover_text("Metronome: click on mix beats, accented on the downbeat (never exported). Volume in the Master tab.").clicked() { self.mix.metronome = !mo; }
+                    ui.add(egui::Button::new("🎧").min_size(vec2(26.0, 24.0))).on_hover_text("Headphone cue (v2)");
+                    if ui.add(egui::Button::new(if self.lock { "🔒" } else { "🔓" }).min_size(vec2(26.0, 24.0))).on_hover_text("Lock tracks so they can't be dragged").clicked() { self.lock = !self.lock; }
                     let n = match self.snapping { Snapping::Off => "Off", Snapping::Free => "Free", Snapping::Half => "Half", Snapping::Full => "Full" };
                     egui::ComboBox::from_id_salt("snap").width(60.0).selected_text(n).show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.snapping, Snapping::Off, "Off (no snap)"); ui.selectable_value(&mut self.snapping, Snapping::Free, "Free (beat)");
@@ -2882,6 +2891,7 @@ impl App {
         let area = Rect::from_min_max(pos2(full.left(), mini.bottom()), full.max);
         let tl_x0 = area.left() + HEAD_W;
         let tl_w = area.right() - tl_x0;
+        self.tl_w = tl_w;
         let bpm = self.mix.bpm;
         let len = self.mix.length_beats().max(64.0);
         let beat_now = self.beat();
@@ -5667,22 +5677,6 @@ impl App {
             Tab::Track => self.track_tab(ui),
             Tab::Grid => self.beatgrid_tab(ui),
             Tab::Compare => self.comparison_tab(ui),
-            Tab::Zoom => {
-                ui.heading("Zoom");
-                ui.add(
-                    egui::Slider::new(&mut self.ppb, 0.3..=80.0)
-                        .logarithmic(true)
-                        .text("pixels per beat"),
-                );
-                if ui.button("Fit whole mix").clicked() {
-                    self.ppb =
-                        (ui.available_width() / self.mix.length_beats().max(64.0) as f32).max(0.3);
-                    self.scroll = 0.0;
-                }
-                ui.label(dim(
-                    "Tip: Ctrl + scroll zooms around the pointer, scroll moves in time.",
-                ));
-            }
             Tab::Video => {
                 ui.heading("Video");
                 ui.label(dim("Video is not supported in v1."));
