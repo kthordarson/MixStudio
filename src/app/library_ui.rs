@@ -695,6 +695,7 @@ impl App {
             columns.extend([(SortCol::Folder, "Folder"), (SortCol::Genre, "Genre")]);
         }
         let roots = self.lib.cfg.folders.clone();
+        let hover_info = self.lib.cfg.hover_info;
         let available = ui.available_height();
         let mods = ui.input(|i| i.modifiers);
         let mut table = egui_extras::TableBuilder::new(ui)
@@ -705,7 +706,7 @@ impl App {
             .max_scroll_height(available)
             .min_scrolled_height(0.0)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(egui_extras::Column::exact(34.0))
+            .column(egui_extras::Column::exact(28.0))
             .column(egui_extras::Column::remainder().at_least(220.0))
             .column(egui_extras::Column::initial(70.0).at_least(50.0))
             .column(egui_extras::Column::initial(58.0).at_least(44.0))
@@ -721,7 +722,7 @@ impl App {
         let mut drag = None;
         let mut listen = None;
         table
-            .header(26.0, |mut header| {
+            .header(22.0, |mut header| {
                 header.col(|_| {});
                 for (col, name) in &columns {
                     header.col(|ui| {
@@ -753,7 +754,7 @@ impl App {
                 }
             })
             .body(|body| {
-                body.rows(46.0, self.lib_view.len(), |mut row| {
+                body.rows(26.0, self.lib_view.len(), |mut row| {
                     let k = row.index();
                     let e = &self.library_entries()[self.lib_view[k]];
                     let selected = self.lib_sel.contains(&e.path);
@@ -784,8 +785,8 @@ impl App {
                         } else {
                             C::from_rgb(52, 54, 60)
                         })
-                        .rounding(Rounding::same(12.0))
-                        .min_size(vec2(24.0, 24.0));
+                        .rounding(Rounding::same(10.0))
+                        .min_size(vec2(20.0, 20.0));
                         if ui
                             .add_enabled(!unavailable, button)
                             .on_hover_text(if on {
@@ -800,18 +801,12 @@ impl App {
                     });
                     row.col(|ui| {
                         ui.add_space(4.0);
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.add(egui::Label::new(egui::RichText::new(e.filename()).strong().size(11.5).color(color),).truncate(),);
-                            let _metadata = if e.artist.is_empty() {
-                                e.title.clone()
-                            } else if e.title.is_empty() {
-                                e.artist.clone()
-                            } else {
-                                format!("{} · {}", e.artist, e.title)
-                            };
-                            // ui.add(egui::Label::new(egui::RichText::new(metadata).size(11.5).color(theme::dim()),).truncate(),);
-                        });
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(e.filename()).strong().size(11.5).color(color),
+                            )
+                            .truncate(),
+                        );
                     });
                     row.col(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -822,7 +817,7 @@ impl App {
                                         .map(|b| format!("{b:.1}"))
                                         .unwrap_or_else(|| "—".into()),
                                 )
-                                .size(13.0)
+                                .size(12.0)
                                 .color(if e.bpm.is_some() {
                                     color
                                 } else {
@@ -850,7 +845,7 @@ impl App {
                             ui.add_space(8.0);
                             ui.label(
                                 egui::RichText::new(fmt_t(e.duration))
-                                    .size(12.5)
+                                    .size(11.5)
                                     .color(color),
                             );
                         });
@@ -868,7 +863,11 @@ impl App {
                             });
                         }
                     }
-                    let response = row.response().on_hover_ui(|ui| {
+                    let response = row.response();
+                    let response = if !hover_info {
+                        response
+                    } else {
+                        response.on_hover_ui(|ui| {
                         ui.set_max_width(480.0);
                         ui.strong(e.filename());
                         ui.label(format!("{} · {}", e.artist, e.title));
@@ -889,7 +888,8 @@ impl App {
                         } else if unavailable {
                             ui.colored_label(C::YELLOW, "Source drive is unavailable");
                         }
-                    });
+                        })
+                    };
                     if response.double_clicked() {
                         double = Some(e.path.clone());
                     } else if response.clicked() {

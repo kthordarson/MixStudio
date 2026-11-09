@@ -237,6 +237,7 @@ pub struct App {
     lane_h: [Option<f32>; 5],
     /// The bottom-panel tab whose panel is collapsed (clicking the active tab again); timeline gets the full height.
     bottom_min: Option<Tab>,
+    settings_open: bool,
     tc_side: usize,
     tc_drag: Option<usize>,
     fx_sel: Option<usize>,
@@ -563,6 +564,7 @@ impl App {
             vzoom: false,
             lane_h: [None; 5],
             bottom_min: None,
+            settings_open: false,
             tc_side: 0,
             tc_drag: None,
             fx_sel: None,
@@ -2294,6 +2296,7 @@ impl eframe::App for App {
             .frame(egui::Frame::none().fill(theme::bg()))
             .show(ctx, |ui| self.master_meter(ui));
         self.persistence_windows(ctx);
+        self.settings_window(ctx);
         self.timeline_rect = egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::bg()))
             .show(ctx, |ui| self.timeline(ui))
@@ -2329,6 +2332,10 @@ impl eframe::App for App {
     }
 }
 
+/// Round 32 px transport button; accent-coloured text gets an accent border.
+fn circ(ui: &mut egui::Ui, t: &str, fill: C, fg: C, tip: &str) -> egui::Response {
+    ui.add(egui::Button::new(egui::RichText::new(t).color(fg).size(16.0)).fill(fill).rounding(16.0).min_size(vec2(32.0, 32.0)).stroke(Stroke::new(1.0_f32, if fg == theme::accent() { theme::accent() } else { theme::line() }))).on_hover_text(tip)
+}
 fn seg_button(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
     ui.add(
         egui::Button::new(egui::RichText::new(text).color(if on {
@@ -2351,7 +2358,7 @@ fn seg_button(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
 
 impl App {
     fn top_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("top").exact_height(44.0).frame(egui::Frame::none().fill(theme::panel()).inner_margin(egui::Margin::symmetric(10.0, 6.0))).show(ctx, |ui| {
+        egui::TopBottomPanel::top("top").exact_height(50.0).frame(egui::Frame::none().fill(theme::panel()).inner_margin(egui::Margin::symmetric(10.0, 6.0))).show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 if ui.add(egui::Button::new("🏠").min_size(vec2(30.0, 28.0))).on_hover_text("New empty mix").clicked() { self.new_project(); }
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -2376,23 +2383,15 @@ impl App {
                         let missing=self.missing_sources().len();if ui.button(format!("Locate missing audio… ({missing})")).clicked(){self.persistence.relink_window=true;ui.close_menu();}
                     });
                 });
-                let mid = ui.max_rect().center().x; let cur = ui.cursor().min.x; ui.add_space((mid - 200.0 - cur).max(10.0));
+                let mid = ui.max_rect().center().x; let cur = ui.cursor().min.x; ui.add_space((mid - 270.0 - cur).max(10.0));
                 egui::Frame::none().fill(C::from_rgb(28, 29, 33)).rounding(8.0).inner_margin(3.0).show(ui, |ui| { ui.horizontal(|ui| {
                     for (k, n) in [(1, "☰ Playlist"), (2, "|||\\ Library"), (3, "〰 Studio")] {
                         if seg_button(ui, n, self.top == k).clicked() { self.top = k; if k == 1 { self.tab = Tab::Playlist; } if k == 2 { self.tab = Tab::Library; } }
                     } }); });
+                ui.add_space(14.0);
+                ui.scope(|ui| self.play_controls(ui));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.menu_button("⚙", |ui| {
-                        ui.label(egui::RichText::new("Settings").strong());
-                        ui.checkbox(&mut self.mix.auto_stems, "Separate stems automatically for new tracks");
-                        ui.horizontal(|ui| { ui.label("Transition stem colours:"); for (v, n) in [(0u8, "Normal"), (1, "Dimmed"), (2, "Inverted")] { ui.radio_value(&mut self.mix.trans_stem_style, v, n); } });
-                        if ui.button("Separate stems for all tracks").clicked() { for i in 0..self.mix.tracks.len() { self.request_stems(i); } ui.close_menu(); }
-                        ui.separator();
-                        let ep = self.ep.lock().unwrap().clone();
-                        ui.label(egui::RichText::new(format!("Stem model: HT-Demucs (MIT), {} MB, downloaded on first use to {}", crate::stems::MODEL_SIZE / 1_000_000, crate::stems::models_dir().display())).color(theme::dim()).size(11.0));
-                        ui.label(egui::RichText::new(if ep.is_empty() { "Inference: not started yet (CUDA if available, else CPU)".to_string() } else { format!("Inference: {ep}") }).color(theme::dim()).size(11.0));
-                    });
-                    ui.menu_button("🎨", theme::menu).response.on_hover_text("Text and interface colours");
+                    if ui.add(egui::Button::new("⚙").min_size(vec2(30.0, 28.0)).selected(self.settings_open)).on_hover_text("Settings and colours").clicked() { self.settings_open = !self.settings_open; }
                     ui.add(egui::Button::new("?").min_size(vec2(28.0, 28.0))).on_hover_text("Space = play/pause · Ctrl+scroll = zoom · scroll = pan · Ctrl+Z = undo · Delete = remove track · drop audio files on the window");
                     if ui.add(egui::Button::new("Export").min_size(vec2(60.0, 28.0))).on_hover_text("Export the whole mix (format in the Master tab)").clicked() { self.dialog(true, 2); }
                 });
@@ -2486,7 +2485,6 @@ impl App {
     fn transport(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("transport").exact_height(46.0).frame(egui::Frame::none().fill(theme::panel()).inner_margin(egui::Margin::symmetric(10.0, 6.0))).show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                let circ = |ui: &mut egui::Ui, t: &str, fill: C, fg: C, tip: &str| ui.add(egui::Button::new(egui::RichText::new(t).color(fg).size(16.0)).fill(fill).rounding(16.0).min_size(vec2(32.0, 32.0)).stroke(Stroke::new(1.0_f32, if fg == theme::accent() { theme::accent() } else { theme::line() }))).on_hover_text(tip);
                 if circ(ui, "+", theme::panel(), theme::accent(), "Add tracks (mp3, wav, flac, ogg, m4a)").clicked() { self.pick_files(None); }
                 if ui.add(egui::Button::new(egui::RichText::new("Auto-order").color(C::BLACK).size(14.0)).fill(theme::accent()).rounding(16.0).min_size(vec2(96.0, 30.0))).on_hover_text("Reorder the playlist for smooth key (Camelot) and tempo transitions. Locked tracks stay put. Undo restores the old order.").clicked() { self.auto_order(); }
                 ui.menu_button("⏷", |ui| { ui.label(egui::RichText::new("Auto-order").strong());
@@ -2510,18 +2508,6 @@ impl App {
                 });
                 egui::ComboBox::from_id_salt("bars").width(46.0).selected_text(format!("{}", self.bars))
                     .show_ui(ui, |ui| { for b in [4, 8, 16, 32] { ui.selectable_value(&mut self.bars, b, format!("{b} bars")); } }).response.on_hover_text("Bar length for loop and overlap");
-                let mid = ui.max_rect().center().x; let cur = ui.cursor().min.x; ui.add_space((mid - 125.0 - cur).max(6.0));
-                let flat = |ui: &mut egui::Ui, t: &str, tip: &str| ui.add(egui::Button::new(egui::RichText::new(t).size(17.0)).frame(false).min_size(vec2(30.0, 30.0))).on_hover_text(tip);
-                let b = self.beat(); let bpm = self.mix.bpm;
-                if flat(ui, "⏮", "Previous track").clicked() { let st: Vec<f64> = self.mix.main_order().iter().map(|&i| self.mix.tracks[i].vis_start(bpm)).filter(|&s| s < b - 2.0).collect(); self.seek(st.last().copied().unwrap_or(0.0)); }
-                if flat(ui, "⏪", "To start").clicked() { self.seek(0.0); }
-                if circ(ui, "⏺", C::from_rgb(50, 52, 58), C::from_rgb(230, 40, 40), "Record: export the mix").clicked() { self.dialog(true, 2); }
-                let pl = self.playing();
-                if ui.add(egui::Button::new(egui::RichText::new(if pl { "⏸" } else { "▶" }).color(C::BLACK).size(18.0)).fill(theme::accent()).rounding(18.0).min_size(vec2(38.0, 36.0))).on_hover_text("Play/pause (space)").clicked() { self.toggle_playback(); }
-                let lb = egui::Button::new(egui::RichText::new("🔁").size(16.0).color(if self.loop_on { theme::accent() } else { theme::txt() })).frame(false).min_size(vec2(30.0, 30.0));
-                if ui.add(lb).on_hover_text("Loop the selected section, or the bar length from the current bar").clicked() { self.stop_comparison(); self.stop_transition_audition(); self.loop_on = !self.loop_on;
-                    let s = (b / 4.0).floor() * 4.0; self.set_loop(if self.loop_on { Some(self.section_range.map(|(_,a,b)| (a,b)).unwrap_or((s, s + self.bars as f64 * 4.0))) } else { None }); }
-                if flat(ui, "⏭", "Next track").clicked() { if let Some(s) = self.mix.main_order().iter().map(|&i| self.mix.tracks[i].vis_start(bpm)).find(|&s| s > b + 0.5) { self.seek(s); } }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add(egui::Button::new("⌨").min_size(vec2(30.0, 28.0))).on_hover_text("Space: play · Ctrl+scroll: zoom · Scroll: pan · Delete: remove · Ctrl+Z / Ctrl+Shift+Z");
                     let mo = self.mix.metronome;
@@ -2535,6 +2521,46 @@ impl App {
                 });
             });
         });
+    }
+
+    /// Playback cluster in the top bar: previous, start, record, play/pause, loop, next.
+    fn play_controls(&mut self, ui: &mut egui::Ui) {
+        let flat = |ui: &mut egui::Ui, t: &str, tip: &str| ui.add(egui::Button::new(egui::RichText::new(t).size(17.0)).frame(false).min_size(vec2(30.0, 30.0))).on_hover_text(tip);
+        let b = self.beat(); let bpm = self.mix.bpm;
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if flat(ui, "⏮", "Previous track").clicked() { let st: Vec<f64> = self.mix.main_order().iter().map(|&i| self.mix.tracks[i].vis_start(bpm)).filter(|&s| s < b - 2.0).collect(); self.seek(st.last().copied().unwrap_or(0.0)); }
+        if flat(ui, "⏪", "To start").clicked() { self.seek(0.0); }
+        if circ(ui, "⏺", C::from_rgb(50, 52, 58), C::from_rgb(230, 40, 40), "Record: export the mix").clicked() { self.dialog(true, 2); }
+        let pl = self.playing();
+        if ui.add(egui::Button::new(egui::RichText::new(if pl { "⏸" } else { "▶" }).color(C::BLACK).size(18.0)).fill(theme::accent()).rounding(18.0).min_size(vec2(36.0, 34.0))).on_hover_text("Play/pause (space)").clicked() { self.toggle_playback(); }
+        let lb = egui::Button::new(egui::RichText::new("🔁").size(16.0).color(if self.loop_on { theme::accent() } else { theme::txt() })).frame(false).min_size(vec2(30.0, 30.0));
+        if ui.add(lb).on_hover_text("Loop the selected section, or the bar length from the current bar").clicked() { self.stop_comparison(); self.stop_transition_audition(); self.loop_on = !self.loop_on;
+            let s = (b / 4.0).floor() * 4.0; self.set_loop(if self.loop_on { Some(self.section_range.map(|(_,a,b)| (a,b)).unwrap_or((s, s + self.bars as f64 * 4.0))) } else { None }); }
+        if flat(ui, "⏭", "Next track").clicked() { if let Some(s) = self.mix.main_order().iter().map(|&i| self.mix.tracks[i].vis_start(bpm)).find(|&s| s > b + 0.5) { self.seek(s); } }
+    }
+
+    /// One dialog for mix settings, library behaviour and interface colours (⚙ in the top bar).
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_open { return; }
+        let mut open = true;
+        let center = ctx.screen_rect().center();
+        egui::Window::new("Settings").open(&mut open).collapsible(false).resizable(false).default_width(400.0).default_pos(center - vec2(200.0, 260.0)).show(ctx, |ui| {
+            ui.label(egui::RichText::new("Mix").strong());
+            ui.checkbox(&mut self.mix.auto_stems, "Separate stems automatically for new tracks");
+            ui.horizontal(|ui| { ui.label("Transition stem colours:"); for (v, n) in [(0u8, "Normal"), (1, "Dimmed"), (2, "Inverted")] { ui.radio_value(&mut self.mix.trans_stem_style, v, n); } });
+            if ui.button("Separate stems for all tracks").clicked() { for i in 0..self.mix.tracks.len() { self.request_stems(i); } }
+            let ep = self.ep.lock().unwrap().clone();
+            ui.label(egui::RichText::new(format!("Stem model: HT-Demucs (MIT), {} MB, downloaded on first use to {}", crate::stems::MODEL_SIZE / 1_000_000, crate::stems::models_dir().display())).color(theme::dim()).size(11.0));
+            ui.label(egui::RichText::new(if ep.is_empty() { "Inference: not started yet (CUDA if available, else CPU)".to_string() } else { format!("Inference: {ep}") }).color(theme::dim()).size(11.0));
+            ui.add_space(6.0); ui.separator();
+            ui.label(egui::RichText::new("Library").strong());
+            if ui.checkbox(&mut self.lib.cfg.hover_info, "Show file and song info when hovering a row").on_hover_text("Popup with artist, title, full path and imported tags").changed() {
+                if let Err(e) = self.lib.save_cfg() { self.status = format!("Could not save library settings: {e}"); }
+            }
+            ui.add_space(6.0); ui.separator();
+            theme::menu(ui);
+        });
+        if !open { self.settings_open = false; }
     }
 
     fn master_meter(&mut self, ui: &mut egui::Ui) {

@@ -136,6 +136,9 @@ pub struct Config {
     pub imports: Vec<String>,
     #[serde(default)]
     pub remaps: Vec<crate::import::Remap>,
+    /// show a file/song info popup when hovering a library row (off by default)
+    #[serde(default)]
+    pub hover_info: bool,
 }
 
 /// `Entry::folder` of tracks shown from an imported library
@@ -1143,6 +1146,10 @@ pub struct Library {
 impl Library {
     pub fn recovery_dir(&self) -> PathBuf {
         self.cfg_dir.join("recovery")
+    }
+    /// Writes the library settings (folders, imports, remaps, UI flags) to disk.
+    pub fn save_cfg(&self) -> std::io::Result<()> {
+        save_config(&self.cfg_dir, &self.cfg)
     }
 
     pub fn new(
