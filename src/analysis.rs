@@ -824,7 +824,7 @@ fn decode_probed(path: &Path, probed: Probed, tolerant: bool) -> anyhow::Result<
 /// the built-in decoder rejects; it also applies MP3 encoder delay and padding itself.
 fn decode_ffmpeg(path: &Path) -> anyhow::Result<Audio> {
     let sr = ffprobe_rate(path).unwrap_or(44100);
-    let out = std::process::Command::new("ffmpeg")
+    let out = crate::export::tool("ffmpeg")
         .args(["-v", "error", "-nostdin", "-i"])
         .arg(path)
         .args(["-map", "0:a:0", "-vn", "-f", "f32le", "-acodec", "pcm_f32le", "-ac", "2", "-ar"])
@@ -848,7 +848,7 @@ fn decode_ffmpeg(path: &Path) -> anyhow::Result<Audio> {
 }
 
 fn ffprobe_rate(path: &Path) -> Option<u32> {
-    let out = std::process::Command::new("ffprobe")
+    let out = crate::export::tool("ffprobe")
         .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate", "-of", "csv=p=0"])
         .arg(path)
         .output()

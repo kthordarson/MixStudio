@@ -93,8 +93,22 @@ pub fn flac(path: &Path, l: &[f32], r: &[f32], sr: u32) -> Result<(), String> {
     std::fs::write(path, sink.as_slice()).map_err(|e| e.to_string())
 }
 
+/// A command for an external tool (ffmpeg, ffprobe). On Windows the child gets no console window,
+/// which would otherwise flash up for every launch from the GUI.
+pub fn tool(name: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(name);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
 pub fn has_ffmpeg() -> bool {
-    std::process::Command::new("ffmpeg")
+    tool("ffmpeg")
         .arg("-version")
         .output()
         .map(|o| o.status.success())
@@ -107,7 +121,7 @@ pub fn mp3(path: &Path, l: &[f32], r: &[f32], sr: u32) -> Result<(), String> {
     }
     let tmp = TemporaryWav::new().map_err(|e| e.to_string())?;
     wav(&tmp.path, l, r, sr, 24).map_err(|e| e.to_string())?;
-    let o = std::process::Command::new("ffmpeg")
+    let o = tool("ffmpeg")
         .args(["-y", "-loglevel", "error", "-i"])
         .arg(&tmp.path)
         .args(["-codec:a", "libmp3lame", "-b:a", "320k"])
