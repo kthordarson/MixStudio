@@ -1586,6 +1586,48 @@ impl App {
             });
         });
     }
+    fn master_tab(&mut self, ui: &mut egui::Ui) {
+        let dim = |s: &str| egui::RichText::new(s).color(theme::dim()).size(11.0);
+        egui::ScrollArea::vertical().id_salt("master_settings").show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                // Column 1: tempo + transport options
+                ui.vertical(|ui| {
+                    ui.set_max_width(340.0);
+                    ui.set_min_width(340.0);
+                    ui.label(egui::RichText::new("Tempo").strong());
+                    let mut b = self.mix.bpm;
+                    ui.horizontal(|ui| { ui.label("Mix tempo"); if ui.add(egui::DragValue::new(&mut b).range(60.0..=200.0).speed(0.1).suffix(" BPM")).changed() { self.mix.bpm = b; } });
+                    ui.checkbox(&mut self.mix.key_lock, "Key lock (keep pitch when tempo changes)").on_hover_text("On: WSOLA time-stretch keeps the pitch. Off: varispeed, pitch follows tempo like a turntable.");
+                    ui.horizontal(|ui| { ui.checkbox(&mut self.mix.metronome, "Metronome"); ui.add(egui::Slider::new(&mut self.mix.metro_vol, 0.0..=1.0).text("click volume")); });
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Tempo lane").strong());
+                    ui.horizontal_wrapped(|ui| { for (k, n) in crate::model::TEMPO_MODES.iter().enumerate() { if ui.radio(self.mix.tempo_mode as usize == k, *n).clicked() { self.snapshot(); self.mix.tempo_mode = k as u8;
+                        if k == 2 && self.mix.tempo_pts.is_empty() { self.mix.tempo_pts = vec![(0.0, self.mix.bpm), (self.mix.length_beats().max(4.0), self.mix.bpm)]; }
+                        if k == 3 && self.mix.ramp.0 <= 0.0 { self.mix.ramp = (self.mix.bpm, self.mix.bpm + 4.0); } } } });
+                    if self.mix.tempo_mode == 3 { ui.horizontal(|ui| { ui.label("Ramp from"); ui.add(egui::DragValue::new(&mut self.mix.ramp.0).range(40.0..=250.0).speed(0.1).suffix(" BPM")); ui.label("to"); ui.add(egui::DragValue::new(&mut self.mix.ramp.1).range(40.0..=250.0).speed(0.1).suffix(" BPM")); ui.label(dim("across the whole mix")); }); }
+                    if self.mix.tempo_mode == 2 { ui.label(dim("Manual: edit the tempo nodes in the tempo lane (click to add, drag, right-click to delete).")); }
+                    if self.mix.tempo_mode == 1 { ui.label(dim("Auto: every track plays at its own tempo and the tempo glides through each transition.")); }
+                });
+                ui.separator();
+                // Column 2: output gain, clipper and meters
+                ui.vertical(|ui| {
+                    ui.set_max_width(560.0);
+                    ui.set_min_width(560.0);
+                    ui.label(egui::RichText::new("Output").strong());
+                    self.master_levels_ui(ui);
+                });
+                ui.separator();
+                // Column 3: export
+                ui.vertical(|ui| {
+                    ui.set_max_width(360.0);
+                    ui.label(egui::RichText::new("Export").strong());
+                    ui.horizontal(|ui| { ui.label("Format"); egui::ComboBox::from_id_salt("efmt").selected_text(crate::export::FORMATS[self.export_fmt as usize].0).show_ui(ui, |ui| { for (k, f) in crate::export::FORMATS.iter().enumerate() { ui.selectable_value(&mut self.export_fmt, k as u8, f.0); } }); });
+                    if self.export_fmt == 3 && !self.ffmpeg { ui.label(egui::RichText::new("MP3 needs ffmpeg (sudo pacman -S ffmpeg).").color(C::from_rgb(230, 120, 90))); }
+                    ui.label(dim("The metronome is never included in exports. Stretch mode per track is in the Track tab."));
+                });
+            });
+        });
+    }
     fn trans_curves_ui(&mut self, ui: &mut egui::Ui, i: usize) {
         ui.separator();
         ui.horizontal_wrapped(|ui| {
@@ -5646,24 +5688,7 @@ impl App {
                 ui.label(dim("Video is not supported in v1."));
             }
             Tab::Effects => self.effects_tab(ui),
-            Tab::Master => {
-                egui::ScrollArea::vertical().id_salt("master_settings").show(ui,|ui| {ui.heading("Master"); let mut b = self.mix.bpm;
-                ui.horizontal(|ui| { ui.label("Mix tempo"); if ui.add(egui::DragValue::new(&mut b).range(60.0..=200.0).speed(0.1).suffix(" BPM")).changed() { self.mix.bpm = b; } });
-                self.master_levels_ui(ui);
-                ui.checkbox(&mut self.mix.key_lock, "Key lock (keep pitch when tempo changes)").on_hover_text("On: WSOLA time-stretch keeps the pitch. Off: varispeed, pitch follows tempo like a turntable.");
-                ui.horizontal(|ui| { ui.checkbox(&mut self.mix.metronome, "Metronome"); ui.add(egui::Slider::new(&mut self.mix.metro_vol, 0.0..=1.0).text("click volume")); });
-                ui.separator();
-                ui.horizontal(|ui| { ui.label("Tempo lane:"); for (k, n) in crate::model::TEMPO_MODES.iter().enumerate() { if ui.radio(self.mix.tempo_mode as usize == k, *n).clicked() { self.snapshot(); self.mix.tempo_mode = k as u8;
-                    if k == 2 && self.mix.tempo_pts.is_empty() { self.mix.tempo_pts = vec![(0.0, self.mix.bpm), (self.mix.length_beats().max(4.0), self.mix.bpm)]; }
-                    if k == 3 && self.mix.ramp.0 <= 0.0 { self.mix.ramp = (self.mix.bpm, self.mix.bpm + 4.0); } } } });
-                if self.mix.tempo_mode == 3 { ui.horizontal(|ui| { ui.label("Ramp from"); ui.add(egui::DragValue::new(&mut self.mix.ramp.0).range(40.0..=250.0).speed(0.1).suffix(" BPM")); ui.label("to"); ui.add(egui::DragValue::new(&mut self.mix.ramp.1).range(40.0..=250.0).speed(0.1).suffix(" BPM")); ui.label(dim("across the whole mix")); }); }
-                if self.mix.tempo_mode == 2 { ui.label(dim("Manual: edit the tempo nodes in the tempo lane (click to add, drag, right-click to delete).")); }
-                if self.mix.tempo_mode == 1 { ui.label(dim("Auto: every track plays at its own tempo and the tempo glides through each transition.")); }
-                ui.separator();
-                ui.horizontal(|ui| { ui.label("Export format:"); egui::ComboBox::from_id_salt("efmt").selected_text(crate::export::FORMATS[self.export_fmt as usize].0).show_ui(ui, |ui| { for (k, f) in crate::export::FORMATS.iter().enumerate() { ui.selectable_value(&mut self.export_fmt, k as u8, f.0); } }); });
-                if self.export_fmt == 3 && !self.ffmpeg { ui.label(egui::RichText::new("MP3 needs ffmpeg (sudo pacman -S ffmpeg).").color(C::from_rgb(230, 120, 90))); }
-                ui.label(dim("The metronome is never included in exports. Stretch mode per track is in the Track tab.")); });
-            }
+            Tab::Master => self.master_tab(ui),
             Tab::Samples => {
                 ui.heading("Samples");
                 ui.horizontal(|ui| {
