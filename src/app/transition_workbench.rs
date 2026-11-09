@@ -307,7 +307,7 @@ impl App {
         ui.label(egui::RichText::new(if stems_ready {"Stems ready: stem choices and preset processing are active."}else{"Stems unavailable: the preset volume curve is used. Separate both tracks to hear individual stem choices."}).color(theme::dim()).size(11.0));
         ui.horizontal_wrapped(|ui| {
             if !stems_ready && ui.button("Separate stems for both").clicked() {self.request_stems(o);self.request_stems(i);}
-            if ui.button("Open Beatgrid ➡ source grid tools").clicked() {self.stop_transition_audition();self.sel=Some(i);self.tab=Tab::Grid;}
+            if ui.button("Open Beatgrid ➡ source grid tools").clicked() {self.stop_transition_audition();self.sel=Some(i);self.open_beatgrid(false);}
         });
     }
     fn transition_listen_ui(&mut self, ui: &mut egui::Ui, incoming: usize) {

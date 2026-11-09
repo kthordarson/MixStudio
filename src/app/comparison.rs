@@ -7,6 +7,7 @@ pub(super) struct Comparison {
     pub incoming: Option<usize>,
     pub stamp: Vec<u64>,
     pub center: f64,
+    /// Visible beats; 0 shows the whole overlap.
     pub span: f64,
     pub anchors: [Option<Anchor>; 2],
     pub slot: usize,
@@ -24,7 +25,7 @@ impl Default for Comparison {
             incoming: None,
             stamp: vec![],
             center: 0.0,
-            span: 8.0,
+            span: 0.0,
             anchors: [None, None],
             slot: 0,
             target: 0.0,
@@ -76,7 +77,7 @@ impl App {
         self.stop_comparison();
         self.sel_in = Some(incoming);
         self.sel = Some(incoming);
-        self.tab = Tab::Compare;
+        self.tab = Tab::Grid;
         self.comparison = Comparison {
             incoming: Some(incoming),
             stamp: self.alignment_stamp(incoming).unwrap_or_default(),
@@ -102,7 +103,7 @@ impl App {
             .and_then(|i| self.alignment_stamp(i))
             .as_ref()
             == Some(&self.comparison.stamp);
-        if self.comparison.incoming.is_some() && (!valid || self.tab != Tab::Compare) {
+        if self.comparison.incoming.is_some() && (!valid || self.tab != Tab::Grid) {
             self.stop_comparison();
             if !valid {
                 self.comparison.anchors = [None, None];
@@ -123,7 +124,7 @@ impl App {
         }
         let mut normal = self.build_snap();
         self.filter_transition_audition(&mut normal);
-        if self.tab != Tab::Compare {
+        if self.tab != Tab::Grid {
             return normal;
         }
         normal.metro = if self.comparison.metro {
@@ -281,7 +282,6 @@ impl App {
     }
     pub(super) fn comparison_tab(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().id_salt("comparison_workbench").show(ui,|ui| {
-            self.beatmatch_ui(ui,true);
             let Some(i)=self.sel_in.filter(|i|self.mix.logical_transitions().iter().any(|x|x.1==*i)) else { return; };
             if self.comparison.incoming!=Some(i) { self.open_comparison(i); }
             if self.alignment_stamp(i).as_ref()!=Some(&self.comparison.stamp) {
@@ -293,12 +293,14 @@ impl App {
                 if ui.button("⬅ 4 beats").clicked(){self.comparison.center-=4.0;}
                 if ui.button("4 beats ➡").clicked(){self.comparison.center+=4.0;}
                 if ui.button("At playhead").clicked(){self.comparison.center=self.beat();}
-                ui.label("View:"); for span in [2.0,4.0,8.0,16.0,32.0] { ui.selectable_value(&mut self.comparison.span,span,format!("{span:.0} beats")); }
+                ui.label("View:"); ui.selectable_value(&mut self.comparison.span,0.0,"Full overlap"); for span in [2.0,4.0,8.0,16.0,32.0] { ui.selectable_value(&mut self.comparison.span,span,format!("{span:.0} beats")); }
                 ui.checkbox(&mut self.comparison.metro,"Preview metronome");
                 if self.comparison.anchors.iter().all(Option::is_some) {ui.checkbox(&mut self.comparison.proposed,"Preview proposed grid");}
             });
+            // While playing, the view follows the playhead through the overlap.
+            if self.comparison.span>0.0 && self.playing() { let b=self.beat(); if b>=s && b<=e { self.comparison.center=b; } }
             self.comparison.center=self.comparison.center.clamp(s,e);
-            let half=self.comparison.span*0.5; let from=(self.comparison.center-half).max(s); let to=(self.comparison.center+half).min(e);
+            let half=if self.comparison.span>0.0 { self.comparison.span*0.5 } else { e-s }; let from=(self.comparison.center-half).max(s); let to=(self.comparison.center+half).min(e);
             if to-from<0.01 { ui.label("No visible overlap."); return; }
             let members=self.transition_members(i).unwrap_or([vec![o],vec![i]]);
             let editable=!self.arrangement_locked() && members.iter().all(|g|g.len()==1) && self.mix.tracks[i].sections.is_empty() && (self.mix.tracks[i].beat_mult-1.0).abs()<1e-9;

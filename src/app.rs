@@ -41,7 +41,6 @@ enum Tab {
     Transition,
     Track,
     Grid,
-    Compare,
     Video,
     Effects,
     Master,
@@ -201,8 +200,6 @@ pub struct App {
     listen: Option<library_listen::Listen>,
     out: crate::audio::Audio,
     ppb: f32,
-    /// Timeline width in points from the last frame (for Fit in the toolbar).
-    tl_w: f32,
     scroll: f64,
     tab: Tab,
     top: usize,
@@ -532,7 +529,6 @@ impl App {
             store: HashMap::new(),
             out,
             ppb: 7.0,
-            tl_w: 800.0,
             scroll: -4.0,
             tab: Tab::Playlist,
             top: 3,
@@ -2259,7 +2255,7 @@ impl eframe::App for App {
             self.library_keys(ctx);
             for (key, sign) in [(egui::Key::Comma, 1.0), (egui::Key::Period, -1.0)] {
                 if ctx.input(|i| !i.modifiers.command && i.key_pressed(key)) {
-                    let target = if matches!(self.tab, Tab::Transition | Tab::Grid | Tab::Compare) {
+                    let target = if matches!(self.tab, Tab::Transition | Tab::Grid) {
                         self.sel_in.or(self.sel)
                     } else {
                         self.sel.or(self.sel_in)
@@ -2334,8 +2330,7 @@ impl eframe::App for App {
             // Workbench tabs: drag the panel's top edge; each tab keeps its own height.
             Tab::Transition => Some(("bottom_transition", 232.0)),
             Tab::Track => Some(("bottom_track", 232.0)),
-            Tab::Grid => Some(("bottom_grid", 232.0)),
-            Tab::Compare => Some(("bottom_compare", 380.0)),
+            Tab::Grid => Some(("bottom_grid", 440.0)),
             _ => None,
         } {
             egui::TopBottomPanel::bottom(id)
@@ -2506,7 +2501,6 @@ impl App {
                                 (Tab::Transition, "🔀 Transition"),
                                 (Tab::Track, "♫ Track"),
                                 (Tab::Grid, "⊞ Beatgrid"),
-                                (Tab::Compare, "Compare"),
                                 (Tab::Video, "🎥 Video"),
                                 (Tab::Effects, "✨ Effects"),
                                 (Tab::Master, "🔊 Master"),
@@ -2537,6 +2531,7 @@ impl App {
                                                 } else {
                                                     self.tab = t;
                                                     self.bottom_min = None;
+                                                    if t == Tab::Grid { self.open_beatgrid(true); }
                                                 }
                                             }
                                         }
@@ -2579,7 +2574,7 @@ impl App {
                 ui.spacing_mut().slider_width = 110.0;
                 ui.add(egui::Slider::new(&mut self.ppb, 0.3..=80.0).logarithmic(true).show_value(false)).on_hover_text("Zoom: pixels per beat. Ctrl + scroll zooms around the pointer, scroll moves in time.");
                 ui.add(egui::DragValue::new(&mut self.ppb).range(0.3..=80.0).speed(0.1).fixed_decimals(1)).on_hover_text("Pixels per beat");
-                if ui.add(egui::Button::new("Fit").min_size(vec2(0.0, 24.0))).on_hover_text("Fit the whole mix in the timeline").clicked() { self.ppb = (self.tl_w / self.mix.length_beats().max(64.0) as f32).max(0.3); self.scroll = 0.0; }
+                if ui.add(egui::Button::new("Fit").min_size(vec2(0.0, 24.0))).on_hover_text("Fit the whole mix in the timeline").clicked() { self.ppb = (self.timeline_rect.width().max(200.0) / self.mix.length_beats().max(64.0) as f32).max(0.3); self.scroll = 0.0; }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.add(egui::Button::new("⌨").min_size(vec2(26.0, 24.0))).on_hover_text("Space: play · Ctrl+scroll: zoom · Scroll: pan · Delete: remove · Ctrl+Z / Ctrl+Shift+Z");
@@ -2891,7 +2886,6 @@ impl App {
         let area = Rect::from_min_max(pos2(full.left(), mini.bottom()), full.max);
         let tl_x0 = area.left() + HEAD_W;
         let tl_w = area.right() - tl_x0;
-        self.tl_w = tl_w;
         let bpm = self.mix.bpm;
         let len = self.mix.length_beats().max(64.0);
         let beat_now = self.beat();
@@ -4773,7 +4767,11 @@ impl App {
                     self.samples.selected.clear();
                 }
                 self.seek(b);
-                if let Some(x) = trans.iter().find(|x| x.1 == ti || x.0 == ti) {
+                if let Some(x) = trans
+                    .iter()
+                    .filter(|x| x.1 == ti || x.0 == ti)
+                    .min_by(|x, y| Self::range_dist(b, x.2, x.3).total_cmp(&Self::range_dist(b, y.2, y.3)))
+                {
                     self.sel_in = Some(x.1);
                 }
             }
@@ -5676,7 +5674,6 @@ impl App {
             Tab::Transition => self.transition_tab(ui),
             Tab::Track => self.track_tab(ui),
             Tab::Grid => self.beatgrid_tab(ui),
-            Tab::Compare => self.comparison_tab(ui),
             Tab::Video => {
                 ui.heading("Video");
                 ui.label(dim("Video is not supported in v1."));
@@ -5770,12 +5767,14 @@ impl App {
         };
         egui::ScrollArea::vertical().id_salt("track_properties").show(ui,|ui| {
             let t=&self.mix.tracks[i];
+            let mut open_grid=false;
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(&t.title).size(18.0).color(theme::txt())).on_hover_text(&t.path);
                 if !t.artist.is_empty() { ui.label(egui::RichText::new(&t.artist).size(14.0).color(theme::dim())); }
                 chip(ui,format!("{:.2} BPM",t.bpm),theme::accent()); chip(ui,t.key.clone(),key_col(&t.key)); chip(ui,fmt_t(t.duration),theme::dim());
-                if ui.button("Open Beatgrid ➡ timing and beatmatch").clicked() { self.tab=Tab::Grid; }
+                if ui.button("Open Beatgrid ➡ timing and beatmatch").clicked() { open_grid=true; }
             });
+            if open_grid { self.open_beatgrid(false); }
             section(ui,"Levels");
             self.track_levels_ui(ui,i);
             section(ui,"Playback");
@@ -6097,8 +6096,48 @@ impl App {
             );
         }
     }
+    /// Distance in beats from `b` to the range `s..=e` (0 when inside).
+    fn range_dist(b: f64, s: f64, e: f64) -> f64 {
+        if b < s { s - b } else if b > e { b - e } else { 0.0 }
+    }
+    /// The transition to beatmatch "now": the one under the playhead, else the nearest one
+    /// involving the selected track, else the nearest overall. Returns the incoming track.
+    fn current_transition(&self) -> Option<usize> {
+        let trans = self.mix.logical_transitions();
+        let b = self.beat();
+        if let Some(x) = trans.iter().find(|x| b >= x.2 && b <= x.3) { return Some(x.1); }
+        let near = |list: &[&(usize, usize, f64, f64)]| list.iter().min_by(|x, y| Self::range_dist(b, x.2, x.3).total_cmp(&Self::range_dist(b, y.2, y.3))).map(|x| x.1);
+        if let Some(t) = self.sel {
+            let mine: Vec<_> = trans.iter().filter(|x| x.0 == t || x.1 == t).collect();
+            if let Some(i) = near(&mine) { return Some(i); }
+        }
+        near(&trans.iter().collect::<Vec<_>>())
+    }
+    /// Open the Beatgrid tab on the current overlap; `zoom` also frames it on the timeline.
+    fn open_beatgrid(&mut self, zoom: bool) {
+        self.tab = Tab::Grid;
+        self.bottom_min = None;
+        let Some(incoming) = self.current_transition() else { return; };
+        self.sel_in = Some(incoming);
+        if self.sel.is_none() { self.sel = Some(incoming); }
+        if self.comparison.incoming != Some(incoming) { self.open_comparison(incoming); }
+        self.comparison.span = 0.0;
+        if zoom { self.show_overlap(incoming, false); }
+    }
+    /// Frame the overlap of `incoming` on the timeline; `seek` also moves the playhead to its middle.
+    fn show_overlap(&mut self, incoming: usize, seek: bool) {
+        let Some((_, _, s, e)) = self.mix.logical_transitions().into_iter().find(|x| x.1 == incoming) else { return; };
+        if seek { self.seek((s + e) * 0.5); }
+        self.scroll = s - 4.0;
+        self.ppb = (self.timeline_rect.width() / (e - s + 8.0) as f32).clamp(2.0, 32.0);
+        self.follow = false;
+    }
     fn beatgrid_tab(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().id_salt("beatgrid_tools").show(ui,|ui| {
+            let left_w = (ui.available_width() * 0.5).clamp(360.0, 640.0);
+            ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+            ui.set_max_width(left_w); ui.set_min_width(left_w);
             if let Some(i)=self.sel.filter(|&i|i<self.mix.tracks.len()) {
                 let t=self.mix.tracks[i].clone();
                 let first=t.start_beat+(t.vis_start(0.0)-t.start_beat).ceil(); let last=t.start_beat+(t.end(0.0)-t.start_beat).floor();
@@ -6161,7 +6200,12 @@ impl App {
                 });
                 ui.label(egui::RichText::new(match self.bm_mode { BmMode::Grid=>"Whole grid: correct a constant phase error. Clip placement stays fixed.",BmMode::Single=>"Single beat: correct one marker; neighbouring beats stay anchored.",BmMode::Following=>"Beat + following: stretch from the beat one bar before the target; earlier beats stay anchored." }).color(theme::dim()).size(11.0));
             } else { ui.label("Select a track to edit its beatgrid."); }
-            ui.separator(); self.beatmatch_ui(ui,true);
+            });
+            ui.separator();
+            ui.vertical(|ui| { self.beatmatch_ui(ui,true); });
+            });
+            ui.separator();
+            self.comparison_tab(ui);
         });
     }
     /// `choose`: show a transition picker (the Transition tab has its own).
@@ -6185,8 +6229,7 @@ impl App {
             if ui.add_enabled(!busy,egui::Button::new(egui::RichText::new("⟲ Auto-align B").color(theme::bg())).fill(theme::accent())).on_hover_text("Measure the overlap and, when the attacks agree, correct the incoming grid's offset (and tempo drift) in one step. Measures again afterwards to verify. One Undo restores it.").clicked() { self.request_beat_check(incoming,ui.ctx(),true); }
             if ui.add_enabled(!busy,egui::Button::new("Measure only")).clicked() { self.request_beat_check(incoming,ui.ctx(),false); }
             if busy { ui.spinner(); ui.label("Measuring attacks…"); }
-            if ui.button("Show overlap").clicked() { if let Some((_,_,s,e))=trans.iter().find(|x|x.1==incoming) { self.sel=Some(incoming); self.seek((*s+*e)*0.5); self.scroll=*s-4.0; self.ppb=(self.timeline_rect.width()/(e-s+8.0) as f32).clamp(2.0,32.0); self.follow=false; } }
-            if self.tab!=Tab::Compare && ui.button("Fine-tune in Compare…").on_hover_text("Waveforms side by side with two manual anchors").clicked(){self.open_comparison(incoming);}
+            if ui.button("Show overlap").clicked() { self.sel=Some(incoming); self.show_overlap(incoming,true); }
         });
         ui.horizontal_wrapped(|ui| {
             let editable =
