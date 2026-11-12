@@ -147,6 +147,9 @@ pub struct Config {
     /// recently opened or saved mix files, newest first
     #[serde(default)]
     pub recent: Vec<String>,
+    /// BPM and key from the files' tags (when present) instead of the app's own detection
+    #[serde(default)]
+    pub use_file_tags: bool,
 }
 
 /// `Entry::folder` of tracks shown from an imported library
@@ -178,6 +181,9 @@ pub struct Entry {
     /// decoder behind a stored analysis_error; a failure from an older decoder is retried
     #[serde(default)]
     pub decoder_version: u32,
+    /// `bpm` / `key` were stored with file tags preferred (`Config::use_file_tags`)
+    #[serde(default)]
+    pub from_tags: bool,
 }
 
 impl Entry {
@@ -1213,9 +1219,44 @@ impl Library {
             ext_map: HashMap::new(),
             imp_seq: 0,
         };
+        crate::analysis::set_use_file_tags(l.cfg.use_file_tags);
+        l.clear_other_bpm_source();
         l.reindex();
         l.reimport();
         l
+    }
+    /// Forget BPM / key stored under the other source setting, so analysis fills them in again
+    /// (from the analysis cache, without decoding).
+    fn clear_other_bpm_source(&mut self) -> bool {
+        let tags = self.cfg.use_file_tags;
+        let mut any = false;
+        for e in &mut self.index.entries {
+            if e.bpm.is_some() && e.from_tags != tags {
+                e.bpm = None;
+                e.key = None;
+                any = true;
+            }
+        }
+        any
+    }
+    /// Choose where BPM and key come from: the files' tags (when present) or detection. Tracks loaded
+    /// afterwards use the new source; the library's BPM / key columns are refreshed in the background.
+    pub fn set_use_file_tags(&mut self, on: bool) -> std::io::Result<()> {
+        if self.cfg.use_file_tags == on {
+            return Ok(());
+        }
+        self.cfg.use_file_tags = on;
+        crate::analysis::set_use_file_tags(on);
+        if self.clear_other_bpm_source() {
+            self.gen += 1;
+            if !self.scanning {
+                self.cancel.store(true, Ordering::Relaxed);
+                self.cancel = Arc::new(AtomicBool::new(false));
+                self.analysing = (0, 0);
+                self.start_analysis();
+            }
+        }
+        self.save_cfg()
     }
     /// (Re)read every imported library on a helper thread (each with a timeout).
     pub fn reimport(&mut self) {
@@ -1479,6 +1520,7 @@ impl Library {
                             Ok((b, k, d)) => {
                                 e.bpm = Some(b);
                                 e.key = Some(k);
+                                e.from_tags = self.cfg.use_file_tags;
                                 e.analysis_error = None;
                                 if e.duration <= 0.0 {
                                     e.duration = d;

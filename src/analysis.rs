@@ -492,6 +492,19 @@ pub struct Analysis {
     /// Set when the file needed repair to decode (ffmpeg, or frames replaced with silence). Not cached.
     #[serde(skip)]
     pub decode_note: Option<String>,
+    /// BPM and key from the file's own tags (ID3 TBPM/TKEY, Vorbis BPM/INITIALKEY, MP4 tmpo), raw.
+    #[serde(default)]
+    pub tag_bpm: Option<f64>,
+    #[serde(default)]
+    pub tag_key: Option<String>,
+    /// The tags above have been read (caches written before they existed are filled in on load).
+    #[serde(default)]
+    pub tags_read: bool,
+    /// BPM / key in this analysis come from the file tags instead of detection. Not cached.
+    #[serde(skip)]
+    pub bpm_from_tag: bool,
+    #[serde(skip)]
+    pub key_from_tag: bool,
 }
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct RhythmEvidence {
@@ -532,6 +545,69 @@ fn dynamic_grid() -> u8 {
 }
 
 impl Analysis {
+    /// Replace the detected BPM / key with the file's tags where they are present and readable.
+    /// The beat grid follows the tag tempo: when the tag agrees with detection (same, double or half
+    /// tempo within 4 %) the detected beat maps are kept (thinned or subdivided for half / double),
+    /// so beats still follow the audio; otherwise detection found a different tempo and the grid
+    /// becomes a constant one at the tag BPM from the detected first downbeat. Phrases are re-derived
+    /// whenever the beat spacing changes.
+    pub fn apply_file_tags(&mut self) {
+        if let Some(k) = self.tag_key.as_deref().and_then(camelot_from_tag) {
+            self.key = k;
+            self.key_from_tag = true;
+        }
+        let Some(tb) = self
+            .tag_bpm
+            .filter(|b| b.is_finite() && (40.0..=300.0).contains(b))
+        else {
+            return;
+        };
+        let det = self.bpm;
+        let fit = [1.0, 2.0, 0.5]
+            .into_iter()
+            .find(|f| det > 0.0 && (tb / (det * f) - 1.0).abs() < 0.04);
+        let offset = self.offset;
+        let rescale = |v: &mut Vec<f64>, f: f64| {
+            if f == 2.0 {
+                let mut out = Vec::with_capacity(v.len() * 2);
+                for w in v.windows(2) {
+                    out.push(w[0]);
+                    out.push(0.5 * (w[0] + w[1]));
+                }
+                out.extend(v.last());
+                *v = out;
+            } else if f == 0.5 && !v.is_empty() {
+                // keep the beats on the downbeat's parity so bars still start on it
+                let i0 = v
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| (a.1 - offset).abs().total_cmp(&(b.1 - offset).abs()))
+                    .map_or(0, |x| x.0);
+                *v = v.iter().skip(i0 % 2).step_by(2).copied().collect();
+            }
+        };
+        match fit {
+            Some(f) => {
+                rescale(&mut self.beats, f);
+                rescale(&mut self.flex, f);
+            }
+            None => {
+                self.beats.clear();
+                self.flex.clear();
+            }
+        }
+        if fit != Some(1.0) && self.peak_sr > 0 && !self.peaks.is_empty() {
+            self.sections = crate::phrase::detect(&crate::phrase::bar_features(
+                &self.peaks,
+                self.peak_sr,
+                PEAK_HOP,
+                tb,
+                self.offset,
+            ));
+        }
+        self.bpm = tb;
+        self.bpm_from_tag = true;
+    }
     pub fn flex_map(&self) -> Option<std::sync::Arc<crate::beatmap::BeatMap>> {
         if self.flex.len() < 16 {
             None
@@ -649,6 +725,8 @@ struct Probed {
     title: String,
     artist: String,
     wave: bool,
+    tag_bpm: Option<f64>,
+    tag_key: Option<String>,
 }
 
 /// Opens the container and reads the title and artist tags.
@@ -672,6 +750,7 @@ fn probe(path: &Path) -> anyhow::Result<Probed> {
     let mut probed =
         symphonia::default::get_probe().format(&hint, mss, &opts, &MetadataOptions::default())?;
     let (mut title, mut artist) = (String::new(), String::new());
+    let (mut tag_bpm, mut tag_key) = (None, None);
     let mut read_meta = |m: &symphonia::core::meta::MetadataRevision| {
         for t in m.tags() {
             match t.std_key {
@@ -679,6 +758,18 @@ fn probe(path: &Path) -> anyhow::Result<Probed> {
                     title = t.value.to_string()
                 }
                 Some(symphonia::core::meta::StandardTagKey::Artist) => artist = t.value.to_string(),
+                Some(symphonia::core::meta::StandardTagKey::Bpm) => {
+                    tag_bpm = parse_tag_bpm(&t.value.to_string()).or(tag_bpm)
+                }
+                _ if is_key_tag(&t.key) => {
+                    let v = t.value.to_string();
+                    if !v.trim().is_empty() {
+                        tag_key = Some(v.trim().to_string());
+                    }
+                }
+                _ if is_bpm_tag(&t.key) => {
+                    tag_bpm = parse_tag_bpm(&t.value.to_string()).or(tag_bpm)
+                }
                 _ => {}
             }
         }
@@ -696,7 +787,123 @@ fn probe(path: &Path) -> anyhow::Result<Probed> {
         .default_track()
         .ok_or_else(|| anyhow::anyhow!("no audio track"))?
         .clone();
-    Ok(Probed { fmt, track, title, artist, wave })
+    Ok(Probed { fmt, track, title, artist, wave, tag_bpm, tag_key })
+}
+
+/// ID3 TKEY, Vorbis KEY / INITIALKEY, iTunes freeform `initialkey`.
+fn is_key_tag(k: &str) -> bool {
+    let k = k.rsplit(':').next().unwrap_or(k).trim();
+    ["TKEY", "TKE", "KEY", "INITIALKEY", "INITIAL KEY"]
+        .iter()
+        .any(|x| k.eq_ignore_ascii_case(x))
+}
+/// BPM tags symphonia does not map to `StandardTagKey::Bpm` (freeform and TXXX variants).
+fn is_bpm_tag(k: &str) -> bool {
+    let k = k.rsplit(':').next().unwrap_or(k).trim();
+    ["TBPM", "BPM", "TEMPO"].iter().any(|x| k.eq_ignore_ascii_case(x))
+}
+/// A plausible BPM from tag text ("128", "127.95", "128 BPM", "128,00").
+pub fn parse_tag_bpm(s: &str) -> Option<f64> {
+    let t: String = s
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
+        .map(|c| if c == ',' { '.' } else { c })
+        .collect();
+    t.parse::<f64>()
+        .ok()
+        .filter(|b| b.is_finite() && (40.0..=300.0).contains(b))
+}
+/// Key tag text -> Camelot ("8A"). Accepts Camelot ("8A", "08A"), Open Key ("1m", "1d") and note
+/// names ("Am", "A minor", "F#", "Bbm", "E♭ maj", "Amin"). None for anything else (e.g. "o" = off key).
+pub fn camelot_from_tag(s: &str) -> Option<String> {
+    let s = s.trim();
+    let first = s.chars().next()?;
+    if first.is_ascii_digit() {
+        let n: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let rest = s[n.len()..].trim();
+        let n: usize = n.parse().ok()?;
+        let mut cs = rest.chars();
+        let (Some(c), None) = (cs.next(), cs.next()) else {
+            return None;
+        };
+        if !(1..=12).contains(&n) {
+            return None;
+        }
+        return match c.to_ascii_uppercase() {
+            'A' => Some(format!("{n}A")),
+            'B' => Some(format!("{n}B")),
+            // Open Key: 1d = C major = 8B, 1m = A minor = 8A
+            'D' => Some(format!("{}B", (n + 6) % 12 + 1)),
+            'M' => Some(format!("{}A", (n + 6) % 12 + 1)),
+            _ => None,
+        };
+    }
+    let pc: i32 = match first.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
+    let mut rest = &s[first.len_utf8()..];
+    let mut pc = pc;
+    match rest.chars().next() {
+        Some(c @ ('#' | '♯')) => {
+            pc += 1;
+            rest = &rest[c.len_utf8()..];
+        }
+        Some(c @ ('b' | '♭')) => {
+            pc -= 1;
+            rest = &rest[c.len_utf8()..];
+        }
+        _ => {}
+    }
+    let minor = match rest.trim() {
+        "" | "M" => false,
+        "m" | "-" => true,
+        r => match r.to_ascii_lowercase().as_str() {
+            "maj" | "major" => false,
+            "min" | "minor" => true,
+            _ => return None,
+        },
+    };
+    Some(camelot(pc.rem_euclid(12) as usize, minor))
+}
+
+static USE_FILE_TAGS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Use BPM / key from file tags (when present) instead of the detected values. Applies to analyses
+/// loaded after the call; the cache always keeps the detected values, so switching back is instant.
+pub fn set_use_file_tags(on: bool) {
+    USE_FILE_TAGS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn use_file_tags() -> bool {
+    USE_FILE_TAGS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Fill in the BPM / key tags of a cached analysis made before they were read, and update the cache.
+fn ensure_tags(a: &mut Analysis, path: &Path, cache: Option<&Path>) {
+    if a.tags_read {
+        return;
+    }
+    if let Ok(p) = probe(path) {
+        a.tag_bpm = p.tag_bpm;
+        a.tag_key = p.tag_key;
+    }
+    a.tags_read = true;
+    if let Some(c) = cache {
+        let _ = std::fs::write(c, serde_json::to_vec(&*a).unwrap_or_default());
+    }
+}
+/// The analysis as the app should use it: detected values, or tag values when that is enabled.
+fn finish(mut a: Analysis) -> Analysis {
+    if use_file_tags() {
+        a.apply_file_tags();
+    }
+    a
 }
 
 fn read_tags(path: &Path) -> anyhow::Result<(String, String)> {
@@ -717,7 +924,7 @@ fn ffmpeg_available() -> bool {
 }
 fn decode_probed(path: &Path, probed: Probed, tolerant: bool) -> anyhow::Result<(Audio, String, String, usize)> {
     use symphonia::core::errors::Error;
-    let Probed { mut fmt, track, title, artist, wave } = probed;
+    let Probed { mut fmt, track, title, artist, wave, .. } = probed;
     let codecs = symphonia::default::get_codecs();
     let mut dec = codecs.make(&track.codec_params, &DecoderOptions { verify: true })?;
     // WAVE PCM and native FLAC declare samples. Other container durations may
@@ -1398,9 +1605,10 @@ fn cache_path(path: &Path) -> Option<std::path::PathBuf> {
 pub fn load_analysis(path: &Path) -> anyhow::Result<Analysis> {
     if let Some(c) = cache_path(path) {
         if let Ok(s) = std::fs::read(&c) {
-            if let Ok(a) = serde_json::from_slice::<Analysis>(&s) {
+            if let Ok(mut a) = serde_json::from_slice::<Analysis>(&s) {
                 if a.version == ANALYSIS_VERSION {
-                    return Ok(a);
+                    ensure_tags(&mut a, path, Some(&c));
+                    return Ok(finish(a));
                 }
             }
         }
@@ -1425,19 +1633,21 @@ fn load_unguarded(path: &Path) -> anyhow::Result<(Audio, Analysis)> {
         if let Ok(s) = std::fs::read(c) {
             if let Ok(mut a) = serde_json::from_slice::<Analysis>(&s) {
                 if a.version == ANALYSIS_VERSION {
+                    ensure_tags(&mut a, path, Some(c));
                     a.decode_note = note;
-                    return Ok((audio, a));
+                    return Ok((audio, finish(a)));
                 }
             }
         }
     }
     let mut a = analyse(&audio, title, artist, path);
-    if let Some(c) = cp {
+    if let Some(c) = &cp {
         let _ = std::fs::create_dir_all(c.parent().unwrap());
-        let _ = std::fs::write(c, serde_json::to_vec(&a).unwrap_or_default());
     }
+    // writes the cache (detected values plus the raw tags)
+    ensure_tags(&mut a, path, cp.as_deref());
     a.decode_note = note;
-    Ok((audio, a))
+    Ok((audio, finish(a)))
 }
 
 pub fn analyse(audio: &Audio, title: String, artist: String, path: &Path) -> Analysis {
@@ -1477,6 +1687,7 @@ pub fn analyse(audio: &Audio, title: String, artist: String, path: &Path) -> Ana
         flex,
         recommended_grid_mode,
         decode_note: None,
+        ..Default::default()
     }
 }
 
@@ -2495,5 +2706,145 @@ mod decode_integrity_tests {
         if strict.is_err() {
             assert!(repaired.3.is_some(), "a repaired file must carry a note");
         }
+    }
+}
+
+#[cfg(test)]
+mod file_tag_tests {
+    use super::*;
+
+    #[test]
+    fn key_tags_become_camelot() {
+        for (tag, want) in [
+            ("Am", "8A"),
+            ("A minor", "8A"),
+            ("C", "8B"),
+            ("Cmaj", "8B"),
+            ("F#m", "11A"),
+            ("Gbm", "11A"),
+            ("Bb", "6B"),
+            ("E\u{266d}min", "2A"),
+            ("8A", "8A"),
+            ("08a", "8A"),
+            ("12B", "12B"),
+            ("1m", "8A"),
+            ("1d", "8B"),
+            ("2d", "9B"),
+            ("12d", "7B"),
+        ] {
+            assert_eq!(camelot_from_tag(tag).as_deref(), Some(want), "{tag}");
+        }
+        for bad in ["", "o", "13A", "H", "Am7", "0A", "8C"] {
+            assert_eq!(camelot_from_tag(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn bpm_tags_parse() {
+        assert_eq!(parse_tag_bpm("128"), Some(128.0));
+        assert_eq!(parse_tag_bpm(" 127.95 "), Some(127.95));
+        assert_eq!(parse_tag_bpm("128,5"), Some(128.5));
+        assert_eq!(parse_tag_bpm("174 BPM"), Some(174.0));
+        assert_eq!(parse_tag_bpm("0"), None);
+        assert_eq!(parse_tag_bpm("x"), None);
+        assert_eq!(parse_tag_bpm("1280"), None);
+    }
+
+    fn detected(bpm: f64, offset: f64, n: usize) -> Analysis {
+        let beats: Vec<f64> = (0..n).map(|i| offset + i as f64 * 60.0 / bpm).collect();
+        Analysis {
+            bpm,
+            offset,
+            key: "5A".into(),
+            beats: beats.clone(),
+            flex: beats,
+            tags_read: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn matching_tag_keeps_the_detected_beats() {
+        let mut a = detected(127.96, 0.5, 64);
+        a.tag_bpm = Some(128.0);
+        a.tag_key = Some("Am".into());
+        let beats = a.beats.clone();
+        a.apply_file_tags();
+        assert_eq!(a.bpm, 128.0);
+        assert_eq!(a.key, "8A");
+        assert!(a.bpm_from_tag && a.key_from_tag);
+        assert_eq!(a.beats, beats);
+        // the beat map matches the track BPM, so the grid stays dynamic
+        let g = crate::beatmap::Grid::new(a.beat_map(), a.bpm, a.offset, 0.0);
+        assert!(g.dynamic());
+    }
+
+    #[test]
+    fn double_and_half_time_tags_rescale_the_beat_map() {
+        let mut a = detected(87.0, 0.3, 64);
+        a.tag_bpm = Some(174.0);
+        a.apply_file_tags();
+        assert_eq!(a.beats.len(), 127);
+        assert!((a.beats[1] - (0.3 + 30.0 / 87.0)).abs() < 1e-9);
+        assert!(crate::beatmap::Grid::new(a.beat_map(), a.bpm, a.offset, 0.0).dynamic());
+
+        // downbeat on an odd beat: the kept beats include it
+        let mut b = detected(140.0, 0.0, 64);
+        b.offset = b.beats[3];
+        b.tag_bpm = Some(70.0);
+        b.apply_file_tags();
+        assert_eq!(b.beats.len(), 32);
+        assert!(b.beats.iter().any(|&x| (x - b.offset).abs() < 1e-9));
+        assert_eq!(b.bpm, 70.0);
+    }
+
+    #[test]
+    fn disagreeing_tag_gives_a_constant_grid_at_the_tag_tempo() {
+        let mut a = detected(128.0, 0.5, 64);
+        a.tag_bpm = Some(96.0);
+        a.apply_file_tags();
+        assert_eq!(a.bpm, 96.0);
+        assert!(a.beats.is_empty() && a.flex.is_empty());
+        let g = crate::beatmap::Grid::new(a.beat_map(), a.bpm, a.offset, 0.0);
+        assert!(!g.dynamic());
+        assert_eq!(a.key, "5A");
+    }
+
+    #[test]
+    fn no_tags_leave_detection_alone() {
+        let mut a = detected(128.0, 0.5, 64);
+        a.tag_key = Some("o".into());
+        a.apply_file_tags();
+        assert_eq!(a.bpm, 128.0);
+        assert_eq!(a.key, "5A");
+        assert!(!a.bpm_from_tag && !a.key_from_tag);
+    }
+}
+
+#[cfg(test)]
+mod file_tag_io_tests {
+    use super::*;
+
+    /// Encodes a short MP3 with ID3 BPM / key frames (needs ffmpeg; skipped without it).
+    #[test]
+    fn mp3_id3_bpm_and_key_are_read() {
+        if !ffmpeg_available() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("mixstudio-tags-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("tagged.mp3");
+        let st = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
+            .args(["-id3v2_version", "3", "-metadata", "TBPM=124", "-metadata", "TKEY=F#m"])
+            .arg(&p)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let pr = probe(&p).unwrap();
+        assert_eq!(pr.tag_bpm, Some(124.0));
+        assert_eq!(pr.tag_key.as_deref(), Some("F#m"));
+        assert_eq!(camelot_from_tag(pr.tag_key.as_deref().unwrap()).as_deref(), Some("11A"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

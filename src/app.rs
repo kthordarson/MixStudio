@@ -2654,6 +2654,18 @@ impl App {
             if ui.checkbox(&mut self.lib.cfg.hover_info, "Show file and song info when hovering a row").on_hover_text("Popup with artist, title, full path and imported tags").changed() {
                 if let Err(e) = self.lib.save_cfg() { self.status = format!("Could not save library settings: {e}"); }
             }
+            let mut tags = self.lib.cfg.use_file_tags;
+            ui.horizontal(|ui| {
+                ui.label("BPM and key:");
+                ui.radio_value(&mut tags, false, "Detect from audio").on_hover_text("Use MixStudio's own tempo, beat and key analysis");
+                ui.radio_value(&mut tags, true, "File tags when present").on_hover_text("Use the BPM and key written in the file's metadata (ID3 TBPM / TKEY, Vorbis, MP4) and fall back to detection for files without them. The beat grid follows the tag tempo: detected beats are kept when they agree with it (also at half or double time), otherwise the grid is a constant one at the tag BPM from the detected first downbeat.");
+            });
+            if tags != self.lib.cfg.use_file_tags {
+                match self.lib.set_use_file_tags(tags) {
+                    Ok(()) => self.status = format!("BPM and key now come from {}. Tracks added from now on use it; tracks already in the mix keep their grids (use Reset grid to analysis to update one).", if tags { "file tags where present" } else { "detection" }),
+                    Err(e) => self.status = format!("Could not save library settings: {e}"),
+                }
+            }
             ui.add_space(6.0); ui.separator();
             theme::menu(ui);
         });
@@ -5961,7 +5973,26 @@ impl App {
                         .any(|(a, b)| (a - b).abs() > 0.002)
             })
     }
+    /// Re-read a stored analysis that was loaded under the other BPM / key source setting
+    /// (from the analysis cache), so resetting a grid follows the current setting.
+    fn refresh_bpm_source(&mut self, path: &str) {
+        let Some((au, an)) = self.store.get(path).cloned() else {
+            return;
+        };
+        let want = analysis::use_file_tags();
+        let applied = an.bpm_from_tag || an.key_from_tag;
+        let has = an.tag_bpm.is_some() || an.tag_key.is_some();
+        if (want && has && !applied) || (!want && applied) {
+            if let Ok(mut fresh) = analysis::load_analysis(std::path::Path::new(path)) {
+                fresh.decode_note = an.decode_note.clone();
+                self.store.insert(path.to_string(), (au, Arc::new(fresh)));
+            }
+        }
+    }
     fn reset_to_analysis(&mut self, i: usize) {
+        if let Some(p) = self.mix.tracks.get(i).map(|t| t.path.clone()) {
+            self.refresh_bpm_source(&p);
+        }
         let Some((_, an)) = self
             .mix
             .tracks
@@ -5976,6 +6007,7 @@ impl App {
         let t = &mut self.mix.tracks[i];
         t.bpm = an.bpm;
         t.offset = an.offset;
+        t.key = an.key.clone();
         t.map = an.beat_map();
         t.flex = an.flex_map();
         t.grid_mode = 1;
